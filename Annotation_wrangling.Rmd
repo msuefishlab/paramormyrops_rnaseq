@@ -1,0 +1,429 @@
+---
+title: "Annotation_wrangling: Create a Pkings_GeneIDs to Drerio_GO_terms dictionary based on the blastp Pkings-Danio annotations"
+author: "Mauricio Losilla"
+date: "August 7, 2018"
+output: html_document
+---
+
+```{r setup}
+# Load required libraries
+library(knitr) #only needed to knit Rmarkdown file
+library(mygene)
+library(testthat)
+library(plyr)
+library(dplyr)
+library(tidyr)
+
+session.Info <- sessionInfo()
+MyGene.Info <- metadata(MyGene())
+
+#set the wd. This is where the files with the read counts and the output folder are
+knitr::opts_knit$set(root.dir = "/home/mau/Dropbox (MSU Efish Lab)/Mau/Research/Differential expression/Analyses/06_Annotation/R") #set this one if knitting the R markdown file
+# setwd("/home/mau/Dropbox (MSU Efish Lab)/Mau/Research/Differential expression/Analyses/06_Annotation/R") #set this one if using the console, or if changing the wd for only one chunk of code in the .Rmd file
+
+#the following will allow par changes for specific plots
+#knitr::opts_knit$set(global.par = TRUE)
+```
+
+
+Import Data. The columns need headers:
+
+qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore
+
+This is what they mean:
+
+ 1.	  qseqid	    query (e.g., gene) sequence id
+ 2.	  sseqid    	subject (e.g., reference genome) sequence id
+ 3.	  pident	    percentage of identical matches
+ 4.	  length	    alignment length
+ 5.	  mismatch	  number of mismatches
+ 6.	  gapopen	    number of gap openings
+ 7.	  qstart	    start of alignment in query
+ 8.   qend	      end of alignment in query
+ 9.   sstart	    start of alignment in subject
+ 10.	send	      end of alignment in subject
+ 11.	evalue	    expect value
+ 12.	bitscore	  bit score
+ 
+ Import the results of the blastp of Pkings_refseq_prots against Drerio_refseq_prots
+```{r}
+#Import the data and name the columns
+blastp.result.original <- read.table("../blastp.NCBI.results.Pkings.Danio.txt", header=FALSE, col.names = c("qseqid", "sseqid", "pident", "length", "mismatch", "gapopen", "qstart", "qend", "sstart", "send", "evalue", "bitscore"), as.is = c(1,2))
+
+#Keep the columns of interest and rename columns to a more descriptive name
+blastp.result <- blastp.result.original[, c("qseqid", "sseqid", "evalue", "bitscore")]
+colnames(blastp.result) <- c("Pking_refseq_prot", "Drerio_refseq_prot", "Evalue", "bitscore")
+```
+
+
+blastp results are protein to protein. I need to connect Pkings genes to proteins
+Convert Pkings proteins (XP.....) to entrez gene ids (mygene):
+```{r}
+# mygene version: 1.14.0
+
+#save the protein names to a vector
+pkings.prots <- as.character(blastp.result[,"Pking_refseq_prot"])
+
+#In other analyses I had a problem with gene LOC111854417, the queryMany function (below) doesn't recognize this as a symbol. I checked the NCBI site and this gene symbol should be cunh4orf54. That is not a problem for this analysis because its protein is correctly identified.
+
+#use queryMany to map proteins to gene IDs, symbols and names
+##the NCBI taxid for Paramormyrops kingsleyae is 1676925
+#the list of available fields for 'scopes' and 'fields' can be found at http://docs.mygene.info/en/latest/doc/query_service.html#available-fields
+Pking.gene.ids <- queryMany(pkings.prots, scopes="refseq", fields=c("entrezgene", "symbol", "name"), species=1676925,  returnall=TRUE)
+
+#make sure there are no genes under $duplicates and $missing
+if (nrow(Pking.gene.ids$duplicates) != 0) stop("There are duplicated values. This is a critical error", call. = FALSE)
+if (length(Pking.gene.ids$missing) != 0) stop("There are missing values. This is a critical error", call. = FALSE)
+
+#make sure that $response has the correct number of rows
+if (nrow(Pking.gene.ids$response) != nrow(blastp.result)) stop("The total numbers of Pking proteins and gene IDs differ. This is a critical error", call. = FALSE)
+
+#make sure the genes are in the same order
+check <- compare(pkings.prots, Pking.gene.ids$response$query)
+if (check$message != "Equal") stop("The lists of Pking proteins don't match. This is a critical error", call. = FALSE)
+
+#convert the results from lists to a data frame
+Pkings.genes.prots <- do.call(cbind.data.frame, c(Pking.gene.ids$response@listData, stringsAsFactors = FALSE))
+
+#check for NAs
+if (length(which(is.na(Pkings.genes.prots))) != 0) warning("There are some NA values", call. = FALSE)
+
+#Keep the columns of interest and rename columns to a more descriptive name
+Pkings.genes.prots <- Pkings.genes.prots[, c("query", "entrezgene", "name", "symbol")]
+colnames(Pkings.genes.prots) <- c("Pking_refseq_prot", "Pking_Entrez_geneID", "Pking_gene_name", "Pking_gene_symbol")
+
+#join the data frames by the Pking_refseq_protein column (full join gives the same result as inner join)
+Pking_all.Danio_prot.data <- full_join(Pkings.genes.prots, blastp.result, by = "Pking_refseq_prot")
+
+#check for NAs
+if (length(which(is.na(Pking_all.Danio_prot.data))) != 0) warning("There are some NA values", call. = FALSE)
+```
+
+Notice that several Pking_entrez_geneIDs will have more than one refseq_protein, and in some cases more than one zebrafish protein (e.g. 111832681). Also, some Pking_Entrez_geneIDs will match the same Drerio_geneID. It will be necessary to make sure to a) keep all GO terms from each zebrafish protein, and then to b) remove redundant (=repeated) GO terms for a given Pkings gene.
+
+
+Use mygene again, this time to link Drerio's refseq proteins with their Entrez_GeneIDs and GO terms
+```{r}
+
+#extract the Drerio proteins as a vector 
+Drerio.refseq.prot <- Pking_all.Danio_prot.data$Drerio_refseq_prot
+Drerio.refseq.prot.unique <- unique(Drerio.refseq.prot)
+
+#use queryMany to map proteins to gene IDs, gene symbols, gene names, GO terms 
+##the NCBI taxid for Danio rerio is 7955
+Drerio.gene.ids <- queryMany(Drerio.refseq.prot.unique, scopes = "refseq", fields=c("entrezgene", "symbol", "name", "go", "pathway.reactome"), species=7955,  returnall=TRUE)
+
+
+#make sure there are no genes under $duplicates and $missing
+if (nrow(Drerio.gene.ids$duplicates) != 0) stop("There are duplicated values. This is a critical error", call. = FALSE)
+if (length(Drerio.gene.ids$missing) != 0) stop("There are missing values. This is a critical error", call. = FALSE)
+
+#make sure that $response has the correct number of rows
+if (nrow(Drerio.gene.ids$response) != length(Drerio.refseq.prot.unique)) stop("The total numbers of Drerio proteins and gene IDs differ. This is a critical error", call. = FALSE)
+
+#make sure the genes are in the same order
+check <- compare(Drerio.refseq.prot.unique, Drerio.gene.ids$response$query)
+if (check$message != "Equal") stop("The lists of Drerio proteins don't match. This is a critical error", call. = FALSE)
+```
+
+
+convert the results from lists to a data frame. This requires dropping the lists with the GO info. I come back to this later in the code
+Join with the Pking data
+```{r}
+#columns to keep
+cols <- c("query", "entrezgene", "name", "symbol")
+
+#extract desired columns
+Drerio.genes.prots <- lapply(Drerio.gene.ids$response[, cols], "[")
+
+#convert list to a data frame
+Drerio.genes.prots <- do.call(cbind.data.frame, c(Drerio.genes.prots, stringsAsFactors = FALSE))
+
+#check for NAs
+if (length(which(is.na(Drerio.genes.prots))) != 0) warning("There are some NA values", call. = FALSE)
+
+#Rename columns to a more descriptive name
+colnames(Drerio.genes.prots) <- c("Drerio_refseq_prot", "Drerio_Entrez_geneID", "Drerio_gene_name", "Drerio_gene_symbol")
+
+#join the data frames by the Pking_refseq_protein column (full join gives the same result as inner join)
+Pking_all.Danio_all.data <- full_join(Pking_all.Danio_prot.data, Drerio.genes.prots, by = "Drerio_refseq_prot")
+
+#check for NAs
+if (length(which(is.na(Pking_all.Danio_all.data))) != 0) warning("There are some NA values", call. = FALSE)
+
+
+#This data frame will be useful if I need to look a gene names and symbols, etc. But for the dictionary I rather simplify this a bit:
+#remove unnecessary columns. Keep only the entrezGeneIDs for each species 
+EntrezGeneIDs.Pking.Drerio <- Pking_all.Danio_all.data[, c("Pking_Entrez_geneID", "Drerio_Entrez_geneID")]
+
+#remove duplicated rows
+unique.EntrezGeneIDs.Pking.Drerio <- EntrezGeneIDs.Pking.Drerio[!duplicated(EntrezGeneIDs.Pking.Drerio), ]
+```
+
+
+Although not the main goal of the code anymore (it was in a previous version), finalize a Pking-to-Drerio GeneIDs "dictionary"
+```{r}
+#I want a Pking-Drerio GeneIDs "dictionary" to be a list of all, unique, Pkings GeneIDs (=23256 rows) on column1, and the respective Drerio GeneIDS on column 2. 459 of the rows will have multiple, comma-separated Drerio GeneIDs in column2. 
+#It's probably an overkill, but I sorted the dictionary by Pking GeneIDs, and I also sorted the Drerio GeneIDs for those cells with multiple of these. 
+Dic.GeneIDs.Pking_Drerio <- ddply(unique.EntrezGeneIDs.Pking.Drerio, .(Pking_Entrez_geneID), summarize, Drerio_Entrez_geneID=paste0(sort(as.integer(unique(Drerio_Entrez_geneID))), collapse = ","))
+Dic.GeneIDs.Pking_Drerio <- Dic.GeneIDs.Pking_Drerio[order(Dic.GeneIDs.Pking_Drerio$Pking_Entrez_geneID), ]
+
+
+#The previous file is what I want, but the next steps provide more info about the counts
+total.Drerio.GeneIDs <- count.fields(textConnection(Dic.GeneIDs.Pking_Drerio[,2]), sep = ",")
+Dic.totals <- data.frame(Dic.GeneIDs.Pking_Drerio, total.Drerio.GeneIDs, stringsAsFactors = FALSE)
+Dic.totals <- Dic.totals[order(Dic.totals$total.Drerio.GeneIDs, decreasing = TRUE), ]
+
+#Check that the numbers make sense
+##the following are both frequencies of Pking GeneIDs and how many Drerio GeneIDs they match
+a <- table(table(unique.EntrezGeneIDs.Pking.Drerio$Pking_Entrez_geneID))
+b <- table(Dic.totals$total.Drerio.GeneIDs)
+check <- compare(a, b)
+if (check$message != "TRUE") stop("Something went wrong in these last steps", call. = FALSE)
+```
+
+
+
+Go back to the Drerio mygene object and create Drerio_Entrez_GeneIDs-to-GO_IDs data frames for each ontology
+```{r}
+
+#create a list with the desired names to iterate through later
+GO.dfs <- c("GO.BP", "GO.CC", "GO.MF")
+
+#extract each ontology info for the Drerio_Entrez_geneIDs (which I got through MyGene)
+list.GO.BP <- Drerio.gene.ids$response@listData$go.BP
+names(list.GO.BP) <- Drerio.gene.ids$response$entrezgene
+
+list.GO.CC <- Drerio.gene.ids$response@listData$go.CC
+names(list.GO.CC) <- Drerio.gene.ids$response$entrezgene
+
+list.GO.MF <- Drerio.gene.ids$response@listData$go.MF
+names(list.GO.MF) <- Drerio.gene.ids$response$entrezgene
+
+
+#convert to data frames: geneID on one column; and sorted, unique, comma-separated list of GOterms in another column
+
+#create empty data frames with desired columns
+GO.BP <- data.frame(Drerio_Entrez_geneID=character(), GO_IDs=character(), stringsAsFactors=FALSE)
+GO.CC <- data.frame(Drerio_Entrez_geneID=character(), GO_IDs=character(), stringsAsFactors=FALSE)
+GO.MF <- data.frame(Drerio_Entrez_geneID=character(), GO_IDs=character(), stringsAsFactors=FALSE)
+  
+for (i in 1:length(Drerio.refseq.prot.unique)) {
+  
+  #populate the data frames with the Drerio_Entrez_GeneIDs and the sorted, unique, comma-separated GO terms (they are already sorted in the source list)
+  GO.BP[i, "Drerio_Entrez_geneID"] <- names(list.GO.BP[i])
+  GO.BP[i, "GO_IDs"] <- paste(unique(list.GO.BP[[i]]$id), collapse = ",")
+  
+  GO.CC[i, "Drerio_Entrez_geneID"] <- names(list.GO.CC[i])
+  GO.CC[i, "GO_IDs"] <- paste(unique(list.GO.CC[[i]]$id), collapse = ",")
+
+  GO.MF[i, "Drerio_Entrez_geneID"] <- names(list.GO.MF[i])
+  GO.MF[i, "GO_IDs"] <- paste(unique(list.GO.MF[[i]]$id), collapse = ",")
+  
+}
+
+#remove duplicates and count empty cells (there are no NAs or NULLs)
+for (i in GO.dfs) {
+  
+  #create dummy variable with the target dataframe
+  dummy <- get(i)
+  
+  #remove duplicated rows
+  dummy <- dummy[!duplicated(dummy), ] 
+  
+  #count annotated and non-annotated genes
+  assign(paste0(i, ".annotated"), sum(dummy$GO_IDs != ""))
+  assign(paste0(i, ".non.annotated"), sum(dummy$GO_IDs == ""))
+  
+  #make sure that all rows are accounted for
+  if ((sum(dummy$GO_IDs != "") + sum(dummy$GO_IDs == "")) != length(dummy$GO_IDs)) stop(paste0("The are rows unaccounted for in ", i, ". This is a critical error"), call. = FALSE)
+  
+  #return values to the proper file name
+  assign(i, dummy)
+  
+}
+
+``` 
+
+
+I also want files that list GO_IDs and GO_terms for each ontology. These may aide in interpreting the results. I will generate such objects in the next code chunck, although it's not necessary for the main goal of getting Pking_EntrezGeneIDs-to-Drerio_GOterms dictionaries (that continues in the code chunk after this one) 
+```{r}
+#For each ontology, the info I want is stored in the list "list.GO.<ontology>", under the sublists "id" and "term"
+
+#convert to data frames with sorted, unique GOids and GOterms in columns
+
+#create empty data frames with desired columns
+GO.gene.id.term.BP <- data.frame(Drerio_Entrez_geneID=character(), GO_IDs=character(), GO_terms=character(), stringsAsFactors=FALSE)
+GO.gene.id.term.CC <- data.frame(Drerio_Entrez_geneID=character(), GO_IDs=character(), GO_terms=character(), stringsAsFactors=FALSE)
+GO.gene.id.term.MF <- data.frame(Drerio_Entrez_geneID=character(), GO_IDs=character(), GO_terms=character(), stringsAsFactors=FALSE)
+
+#populate the data frames with the Drerio_Entrez_GeneIDs and the sorted, unique, GO ids and GO terms
+for (i in 1:length(Drerio.refseq.prot.unique)) {
+ 
+  #collapsing with ";" is necessary because some GOterms have a "," !! This messes up the function "separate_rows", which separates the collapsed lists into rows
+  GO.gene.id.term.BP[i, "Drerio_Entrez_geneID"] <- names(list.GO.BP[i])
+  GO.gene.id.term.BP[i, "GO_IDs"] <- paste(list.GO.BP[[i]]$id, collapse = ";")
+  GO.gene.id.term.BP[i, "GO_terms"] <- paste(list.GO.BP[[i]]$term, collapse = ";")
+  
+  GO.gene.id.term.CC[i, "Drerio_Entrez_geneID"] <- names(list.GO.CC[i])
+  GO.gene.id.term.CC[i, "GO_IDs"] <- paste(list.GO.CC[[i]]$id, collapse = ";")
+  GO.gene.id.term.CC[i, "GO_terms"] <- paste(list.GO.CC[[i]]$term, collapse = ";")
+  
+  GO.gene.id.term.MF[i, "Drerio_Entrez_geneID"] <- names(list.GO.MF[i])
+  GO.gene.id.term.MF[i, "GO_IDs"] <- paste(list.GO.MF[[i]]$id, collapse = ";")
+  GO.gene.id.term.MF[i, "GO_terms"] <- paste(list.GO.MF[[i]]$term, collapse = ";")
+  
+}
+
+
+#separate the collapsed lists of GO ids and terms into rows. The gene column serves as a check
+GO.gene.id.term.BP <- separate_rows(GO.gene.id.term.BP, GO_IDs, GO_terms, sep = ";")
+
+GO.gene.id.term.CC <- separate_rows(GO.gene.id.term.CC, GO_IDs, GO_terms, sep = ";")
+
+GO.gene.id.term.MF <- separate_rows(GO.gene.id.term.MF, GO_IDs, GO_terms, sep = ";")
+
+
+#drop the gene column
+GO.id.term.BP <- subset(GO.gene.id.term.BP, select = -Drerio_Entrez_geneID)
+
+GO.id.term.CC <- subset(GO.gene.id.term.CC, select = -Drerio_Entrez_geneID)
+
+GO.id.term.MF <- subset(GO.gene.id.term.MF, select = -Drerio_Entrez_geneID)
+
+
+#remove duplicates and sort by GO_ID
+GO.id.term.BP <- unique(GO.id.term.BP[GO.id.term.BP != "", ])
+GO.id.term.BP <- arrange(GO.id.term.BP, GO_IDs)
+
+GO.id.term.CC <- unique(GO.id.term.CC[GO.id.term.CC != "", ])
+GO.id.term.CC <- arrange(GO.id.term.CC, GO_IDs)
+
+GO.id.term.MF <- unique(GO.id.term.MF[GO.id.term.MF != "", ])
+GO.id.term.MF <- arrange(GO.id.term.MF, GO_IDs)
+
+```
+
+
+Regarding the GOterms lists, at this point I have:
+
+a) a data frame that connects Pking and Drerio EntrezGeneIDs (unique.EntrezGeneIDs.Pking.Drerio). It has 23749 rows, 23256 unique Pking geneIDs, and 16982 unique Drerio geneIDs
+b) Three data frames, each one connects Drerio EntrezGeneIDs with one GO ontology (GO.BP, GO.CC, GO.MF). Each has 16982 rows and the same number of unique Drerio EntrezGeneIDs, of which the following are annotated in each, respectively: 12111, 12040, 12104.
+
+I need three Pking_EntrezGeneIDs-to-Drerio_GOterms dictionaries, each with the following structure:
+gene_ID<TAB>GO_ID1, GO_ID2, GO_ID3, ...
+```{r}
+
+#create en empty list to hold the results
+Dics.Pking.GOterms <- list()
+
+for (i in GO.dfs) {
+
+  #create dummy variable with the target dataframe
+  dummy <- get(i)
+
+  #join the data frames by the Drerio_Entrez_geneID column
+  index <- match(i, GO.dfs)
+  Dics.Pking.GOterms[[index]] <- full_join(unique.EntrezGeneIDs.Pking.Drerio, dummy, by = "Drerio_Entrez_geneID")
+  names(Dics.Pking.GOterms)[index] <- paste0("PkingEntrezGeneID-to-", i)
+  
+  #remove Drerio_EntrezGeneIDs
+  Dics.Pking.GOterms[[index]] <- subset(Dics.Pking.GOterms[[index]], select = -Drerio_Entrez_geneID) 
+ 
+  #merge rows with the same PkingsEntrezGeneIDs but different GOterms. Remove duplicate GOterms, sort GOterms for a given Pking_gene, [but see next paragraph]
+  Dics.Pking.GOterms[[index]] <- ddply(Dics.Pking.GOterms[[index]], .(Pking_Entrez_geneID), summarize, GO_IDs=paste0(sort(unique(GO_IDs)), collapse = ","))
+  
+}
+
+#At this point, there are still a couple of problems with the lists. The last step merged rows that already had GO terms as comma-separated lists. When it removed duplicates, it looked at these comma-separated lists and not at individual GO terms, which means that if a GO term was present in two different comma-separated lists, then it was carried over to the merged row more than once. Also, some of the rows to merge consisted of an empty row (no GO terms) and an non-empty row (GO terms present). In such cases, the empty row contributed with an additional comma. These merge rows look like this: ",GO:000...". 
+#I found instances of both of these problems, and fixed them with the following code:
+
+for (i in names(Dics.Pking.GOterms)) {
+  
+  #find the index of the target dic in the Dics list
+  index.list <- match(i, names(Dics.Pking.GOterms))
+  
+    for (j in Dics.Pking.GOterms[[index.list]]$GO_IDs) {
+  
+      #find the index of the target cell
+      index.cell <- match(j, Dics.Pking.GOterms[[index.list]]$GO_IDs)
+      
+      #split the terms, get rid of the commas (the result is a list, I need to save as a vector, hence the double brackets at the end)
+      dummy <- strsplit(j, ",")[[1]]
+  
+      #get rid of empty elements created by the additional commas, remove duplicates, and sort
+      dummy <- sort(unique(dummy[dummy != ""]))
+  
+      #reassemble the comma separated list
+      Dics.Pking.GOterms[[index.list]]$GO_IDs[index.cell] <- paste(dummy, collapse = ",")
+  
+    }
+}
+
+#### And the result is exactly what I am after. ####
+
+#The next steps provide more info about the counts
+
+#create en empty list to hold the results
+Dic.GO.totals <- list()
+
+#count empty cells (there are no NAs or NULLs), and count how many GOterms each Pking_GeneID has
+for (i in names(Dics.Pking.GOterms)) {
+  
+  #count annotated and non-annotated genes
+  assign(paste0(i, ".annotated"), sum(Dics.Pking.GOterms[[i]]$GO_IDs != ""))
+  assign(paste0(i, ".non.annotated"), sum(Dics.Pking.GOterms[[i]]$GO_IDs == ""))
+  
+  #make sure that all rows are accounted for
+  if ((sum(Dics.Pking.GOterms[[i]]$GO_IDs != "") + sum(Dics.Pking.GOterms[[i]]$GO_IDs == "")) != length(Dics.Pking.GOterms[[i]]$GO_IDs)) stop(paste0("The are rows unaccounted for in ", i, ". This is a critical error"), call. = FALSE)
+  
+  
+  #count how many GOterms each Pking_GeneID has
+  
+  #find the index of the target dic in the Dics list
+  index.list <- match(i, names(Dics.Pking.GOterms))
+  
+  total.GOterms <- count.fields(textConnection(Dics.Pking.GOterms[[i]][,2]), sep = ",", blank.lines.skip = FALSE)
+  Dic.GO.totals[[index.list]] <- data.frame(Dics.Pking.GOterms[[i]], total.GOterms, stringsAsFactors = FALSE)
+  Dic.GO.totals[[index.list]] <- Dic.GO.totals[[index.list]][order(Dic.GO.totals[[index.list]]$total.GOterms, decreasing = TRUE), ]
+  names(Dic.GO.totals)[index.list] <- i
+  
+  #Check that the numbers for non-annotated PkingEntrezGeneIDs and these GeneIDs with count = 0 match
+  ##the following gives the frequencies of how many Pking_GeneIDs (element's value) have a given number of GOids (element's name)
+  a <- table(Dic.GO.totals[[index.list]]$total.GOterms)
+  #From this table, I need the element named "0" (=how many Pking_geneIDs have 0 GOids)
+  check <- compare(get(paste0(i, ".non.annotated")), a[["0"]])
+  
+  if (check$message != "Equal") stop("Something went wrong in these last steps", call. = FALSE)
+
+}
+
+```
+
+
+Save the desired dictionaries
+```{r}
+
+#Save the PkingEntrezGeneID-to-DrerioGOterms dictionaries
+for (i in names(Dics.Pking.GOterms)) {
+
+  outfile = paste0("../Dic.", i, ".txt")
+  write.table(Dics.Pking.GOterms[[i]], file=outfile, quote=F, sep="\t", row.names = FALSE)
+
+}
+
+##Additional files to save (sept18)
+
+#Save lists with GO_IDs and GO_terms for each ontology
+write.table(GO.id.term.BP, file="../Dic.BP.GOid_to_term.txt", quote=F, sep="\t", row.names = FALSE)
+
+write.table(GO.id.term.CC, file="../Dic.CC.GOid_to_term.txt", quote=F, sep="\t", row.names = FALSE)
+
+write.table(GO.id.term.MF, file="../Dic.MF.GOid_to_term.txt", quote=F, sep="\t", row.names = FALSE)
+
+
+#save the workspace
+save.image(file = "Annot_wrangling_NCBI_GOterms.RData")
+```
+
+

@@ -1,0 +1,137 @@
+---
+title: "Translate gene names from Trinity_align_count and save a EntrezGeneID, name, symbol & type table"
+author: "Mauricio Losilla"
+date: "August 20, 2018"
+output: html_document
+---
+
+```{r setup}
+# Load required libraries
+library(knitr) #only needed to knit Rmarkdown file
+library(mygene)
+library(testthat)
+library(dplyr)
+
+session.Info <- sessionInfo()
+MyGene.Info <- metadata(MyGene())
+
+#set the wd. This is where the files with the read counts and the output folder are
+knitr::opts_knit$set(root.dir = "/home/mau/Dropbox (MSU Efish Lab)/Mau/Research/Differential expression/Analyses/04_Trinity_align_count/R") #set this one if knitting the R markdown file
+# setwd("/home/mau/Dropbox (MSU Efish Lab)/Mau/Research/Differential expression/Analyses/04_Trinity_align_count/R") #set this one if using the console, or if changing the wd for only one chunk of code in the .Rmd file
+
+#the following will allow par changes for specific plots
+#knitr::opts_knit$set(global.par = TRUE)
+```
+
+ 
+Import the files that need to be translated. These files have Pkings_gene_names_&_symbols, but downstream analyses (enrichment) are better executed with Pkings_EntrezGeneIDs
+```{r}
+#Import the data and name the columns
+gene.counts.orig <- read.table("RSEM.gene.counts.matrix_ORIG_gene_symbols", header=TRUE, row.names = NULL)
+colnames(gene.counts.orig)[1] <- "Pking_gene_name/symbol"
+
+gene.TMM.counts.orig <- read.table("RSEM.gene.TMM.EXPR.matrix_ORIG_gene_symbols", header=TRUE, row.names = NULL)
+colnames(gene.TMM.counts.orig)[1] <- "Pking_gene_name/symbol"
+```
+
+
+Convert Pkings gene names to entrez gene ids (mygene):
+```{r}
+
+#Turns out there is a problem with gene LOC111854417, the queryMany function (below) doesn't find it's gene id (which is 111854417). I checked the NCBI site and this gene symbol should be cunh4orf54. I will change that:
+
+#find the row for this gene and replace the value with the correct symbol
+target.row.1 <- grep("LOC111854417", gene.counts.orig[,1])
+gene.counts.orig[target.row.1,1]="cunh4orf54"
+
+target.row.2 <- grep("LOC111854417", gene.TMM.counts.orig[,1])
+gene.TMM.counts.orig[target.row.2,1]="cunh4orf54"
+
+
+#save the gene names to a vector
+gene.counts.names <- as.character(gene.counts.orig[,"Pking_gene_name/symbol"])
+gene.TMM.counts.names <- as.character(gene.TMM.counts.orig[,"Pking_gene_name/symbol"])
+
+
+#compare the two gene name objects
+check <- compare(gene.counts.names, gene.TMM.counts.names)
+if (check$message != "Equal") stop("The lists of Pking gene_names don't match. This is a critical error", call. = FALSE)
+
+#they are equal, so I only need to fetch Entrez_geneIDs once
+
+
+#use queryMany to map proteins to gene IDs, symbols and names
+##the NCBI taxid for Paramormyrops kingsleyae is 1676925
+#the list of available fields for 'scopes' and 'fields' can be found at http://docs.mygene.info/en/latest/doc/query_service.html#available-fields
+Pking.gene.ids <- queryMany(gene.counts.names, scopes=c("symbol", "alias"), fields=c("entrezgene", "symbol", "name", "type_of_gene"), species=1676925,  returnall=TRUE)
+
+#make sure there are no genes under $duplicates and $missing
+if (nrow(Pking.gene.ids$duplicates) != 0) stop("There are duplicated values. This is a critical error", call. = FALSE)
+if (length(Pking.gene.ids$missing) != 0) stop("There are missing values. This is a critical error", call. = FALSE)
+
+#make sure that $response has the correct number of rows
+if (nrow(Pking.gene.ids$response) != nrow(gene.counts.orig)) stop("The total numbers of Pking gene_names and gene IDs differ. This is a critical error", call. = FALSE)
+
+#make sure the genes are in the same order
+check <- compare(gene.counts.names, Pking.gene.ids$response$query)
+if (check$message != "Equal") stop("The lists of Pking gene_names don't match. This is a critical error", call. = FALSE)
+
+#convert the results from lists to a data frame
+Pkings.genes.Entrez <- do.call(cbind.data.frame, c(Pking.gene.ids$response@listData, stringsAsFactors = FALSE))
+
+#check for NAs
+if (length(which(is.na(Pkings.genes.Entrez))) != 0) warning("There are some NA values", call. = FALSE)
+
+
+#Keep the columns of interest for the EntrezGeneID_to_name&symbol&type table and rename columns to a more descriptive name
+Pkings.EntrezIDs.names.symbols <- Pkings.genes.Entrez[, c("entrezgene", "name", "symbol", "type_of_gene")]
+colnames(Pkings.EntrezIDs.names.symbols) <- c("Pking_Entrez_geneID", "Pking_gene_name", "Pking_gene_symbol", "type_of_gene")
+
+#Keep the columns of interest for the Trinity_align_count files and rename columns to a more descriptive name
+Pkings.genes.Entrez <- Pkings.genes.Entrez[, c("query", "entrezgene")]
+colnames(Pkings.genes.Entrez) <- c("Pking_gene_name/symbol", "Pking_Entrez_geneID")
+```
+
+
+Arrange data, and save it in the original file arrangement
+```{r}
+#join the data frames by the Pking_gene_name/symbol column (full join gives the same result as inner join)
+gene.counts.entrez <- full_join(Pkings.genes.Entrez, gene.counts.orig, by = "Pking_gene_name/symbol")
+gene.TMM.counts.entrez <- full_join(Pkings.genes.Entrez, gene.TMM.counts.orig, by = "Pking_gene_name/symbol")
+
+
+#check for the correct number of genes
+if (nrow(gene.counts.entrez) != nrow(gene.counts.orig)) stop("The total number of Pking entrez_geneIDs doesn't match the original number of genes. This is a critical error", call. = FALSE)
+if (nrow(gene.TMM.counts.entrez) != nrow(gene.TMM.counts.orig)) stop("The total number of Pking entrez_geneIDs doesn't match the original number of genes. This is a critical error", call. = FALSE)
+
+#check for NAs
+if (length(which(is.na(gene.counts.entrez))) != 0) warning("There are some NA values", call. = FALSE)
+if (length(which(is.na(gene.TMM.counts.entrez))) != 0) warning("There are some NA values", call. = FALSE)
+
+
+#delete columns, move Entrez GeneIDs to rownames
+gene.counts.entrez$`Pking_gene_name/symbol` <- NULL
+gene.TMM.counts.entrez$`Pking_gene_name/symbol` <- NULL
+
+rownames(gene.counts.entrez) <- gene.counts.entrez[,1]
+gene.counts.entrez$Pking_Entrez_geneID <- NULL
+
+rownames(gene.TMM.counts.entrez) <- gene.TMM.counts.entrez[,1]
+gene.TMM.counts.entrez$Pking_Entrez_geneID <- NULL
+
+
+#save Trinity files with original names
+outfile1a = "../Align_and_Counts/RSEM.gene.counts.matrix"
+write.table(format(gene.counts.entrez, digits=2, scientific = FALSE, trim = TRUE), file=outfile1a, quote=F, sep="\t", col.names = NA)
+
+outfile2a= "../Align_and_Counts/RSEM.gene.TMM.EXPR.matrix"
+write.table(format(gene.TMM.counts.entrez, digits=3, scientific = FALSE, trim = TRUE), file=outfile2a, quote=F, sep="\t", col.names = NA)
+
+#Save the EntrezGeneID_to_name&symbol&type table
+write.table(Pkings.EntrezIDs.names.symbols, file="Dic.PkingEntrezGeneID-to-name_symbol_type.txt", quote=F, sep="\t", row.names = FALSE)
+
+#save the workspace
+save.image(file = "translate_geneIDs.RData")
+
+```
+

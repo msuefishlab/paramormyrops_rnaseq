@@ -1,0 +1,468 @@
+---
+title: "Clustering of DEG"
+author: "Mauricio Losilla"
+date: "July 21, 2018"
+output: html_document
+---
+
+Load packages and set wd
+```{r setup}
+# Load required libraries
+library(knitr) #only needed to knit Rmarkdown file
+library(plyr)
+library(dplyr)
+library(tibble)
+
+session.Info <- sessionInfo()
+
+#set the wd. This is where the files with the read counts and the output folder are
+knitr::opts_knit$set(root.dir = "/home/mau/Dropbox (MSU Efish Lab)/Mau/Research/Differential expression/Analyses/05_Differential_Gene_Expression/R") #set this one if knitting the R markdown file
+setwd("/home/mau/Dropbox (MSU Efish Lab)/Mau/Research/Differential expression/Analyses/05_Differential_Gene_Expression/R") #set this one if using the console, or if changing the wd for only one chunk of code in the .Rmd file
+
+#the following will allow par changes for specific plots
+#knitr::opts_knit$set(global.par = TRUE)
+```
+
+
+Import Data from Trinity and set other parameters
+```{r}
+#Load the data from the Trinity DE analysis. These are TMM expression values for each DEG, transformed [log2(TMM +1)], then mean-centered, but not scaled.
+load("../genes_edgeR/diffExpr.P0.001_C2.matrix.RData")
+
+#these are R's default margins (this step might not be necessary)
+old.par <- par(mar=c(5.1, 4.1, 4.1, 2.1), cex=1)
+
+#Type of measurement
+stat <- "mean"
+```
+
+
+Write a function to select the samples for each group, based on the EOD phenotypes of interest
+```{r}
+
+samples.per.group <- function (group1, group2) {
+
+  #get the indexes of the samples of each group, from a list of all samples
+  g1.index <- match(group1, sample_types)
+  g2.index <- match(group2, sample_types)
+
+  #results list
+  result <- list()
+  result[[1]] <- character()
+  result[[2]] <- character()
+  
+  #get the samples for each group
+  for (i in g1.index) {
+    dummy <- as.vector(samples_data[samples_data[,1]==sample_types[i], 2])
+    result[[1]] <- append(result[[1]], dummy)
+  }
+
+  for (i in g2.index) {
+    dummy <- as.vector(samples_data[samples_data[,1]==sample_types[i], 2])
+    result[[2]] <- append(result[[2]], dummy)
+  }
+
+  #name the resulting lists
+  names(result)[1] <- paste0(deparse(substitute(group1)), "_samples")
+  names(result)[2] <- paste0(deparse(substitute(group2)), "_samples")
+  
+  return(result)
+  
+}
+
+```
+
+
+Write a function to select and save the genes with desired expression profile
+```{r}
+
+genes.of.interest <- function (groups, threshold) {
+  
+  #get mean values of each group
+  av.values.g1 <- apply(data[,groups[[1]]], 1, FUN = mean)
+  av.values.g2 <- apply(data[,groups[[2]]], 1, FUN = mean)
+
+  #create empty list for results
+  result <- list()
+  #record the threshold, to later include it in the plots
+  result[[1]] <- threshold
+  
+  #add a columns with the desired differences (see below). This will allow to rank the selected genes 
+  data.mod <- cbind((av.values.g1 - av.values.g2), (av.values.g2 - av.values.g1), data)
+  colnames(data.mod)[c(1,2)] <- c("g1", "g2")
+  
+ # genes enriched in group#1 (=depleted in group#2): mean expression value of group#1 is t (threshold) larger than the mean expression value of group#2
+  dummy <- data.mod[data.mod[, "g1"] >= threshold, , drop = FALSE]
+  #rank the genes
+  dummy <- dummy[order(dummy[,"g1"], decreasing = TRUE),]
+  #delete the columns with the differences in mean values
+  result[[2]] <- dummy[,-1:-2, drop = FALSE]
+  
+  
+  # genes enriched in group#2 (=depleted in group#1): mean expression value of group#2 is t (threshold) larger than the mean expression value of group#1
+  dummy <- data.mod[data.mod[, "g2"] >= threshold, , drop = FALSE]
+  #rank the genes
+  dummy <- dummy[order(dummy[,"g2"], decreasing = TRUE),]
+  
+  #delete the columns with the differences in mean values
+  result[[3]] <- dummy[,-1:-2, drop = FALSE]
+  
+  #name the lists
+  names(result)[1] <- "threshold_difference"
+  names(result)[2] <- paste0("enriched_in_", names(groups[1]))
+  names(result)[3] <- paste0("enriched_in_", names(groups[2]))
+  
+  
+  #for the polarity samples: add empty columns where the unused samples are. This will allow to keep the samples in the same position within the x axis, when plotting
+  if (length(grep("penetrations", names(result[2]))) > 0) {
+    
+    #delete the columns with the unused samples
+    dummy <- result[[2]][, c("PKINGP_6716", "PKINGP_6718", "PMAG1_6780", "PMAG1_6787",  "PMAG2_6768",  "PMAG2_6769"), drop = FALSE]
+    #add empty columns in place for the unused samples
+    result[[2]] <- cbind(NA, NA, NA, dummy, NA, NA)
+    colnames(result[[2]]) <- colnames(data)
+    
+    #repeat for the other phenotype
+    dummy <- result[[3]][, c("PKINGP_6716", "PKINGP_6718", "PMAG1_6780", "PMAG1_6787",  "PMAG2_6768",  "PMAG2_6769"), drop = FALSE]
+    #add empty columns in place for the unused samples
+    result[[3]] <- cbind(NA, NA, NA, dummy, NA, NA)
+    colnames(result[[3]]) <- colnames(data)
+
+  }
+  
+  #save the lists
+  outfile1 = paste0("../Custom_clusters/clusters_logTMM/", names(result)[2], "__threshold_difference_of_", threshold, "___", stat, ".txt")
+  write.table(result[[2]], file=outfile1, quote=F, sep="\t")
+  
+  outfile2 = paste0("../Custom_clusters/clusters_logTMM/", names(result)[3], "__threshold_difference_of_", threshold, "___", stat, ".txt")
+  write.table(result[[3]], file=outfile2, quote=F, sep="\t")
+
+  return(result)
+  
+}
+
+```
+
+
+Write a function to plot the genes with the desired expression profile
+THIS CODE plots the graphs without background color, and each has its own scale
+```{r}
+#This function will fail if there are no genes in a list
+
+plot.expression <- function (genes) {
+  
+  #create empty list for resulting plots
+  result <- list()
+  
+  for (i in 1:length(genes)) {
+    
+    #get the threshold value
+    if (! is.integer(dim(genes[[i]]))) {
+  
+    t <- genes[[i]]
+  
+  } else {
+    
+      #plot the first gene and all the aesthetics
+      #set par details for each plot
+      par(cex=0.6)
+      par(mar=c(7,4,4,2))
+        
+      data.plot = genes[[i]]
+      ymin = min(data.plot, na.rm = TRUE); ymax = max(data.plot, na.rm = TRUE);
+      title = paste(names(genes[i]), ', ', length(data.plot[,1]), " genes", sep='')
+      subtitle <- paste0(stat, " difference between groups = ", t)
+      plot_label <- paste(title, "\n", subtitle)
+        
+      #plot the first gene, with title and y axis
+      plot(as.numeric(data.plot[1,]), type='l', ylim=c(ymin,ymax), main=plot_label, col='lightgray', xaxt='n', xlab='', ylab='centered log2(TMM + 1)')
+        
+      #add the samples' names to the x axis
+      axis(side=1, at=1:length(data.plot[1,]), labels=colnames(data.plot), las=2)
+        
+    #plot the remaining genes
+      for(r in 2:length(data.plot[,1])) {
+        points(as.numeric(data.plot[r,]), type='l', col='lightgray')
+      }
+        
+    #plot the line of mean expression values
+      points(as.numeric(colMeans(data.plot)), type='o', col='blue')
+        
+    #save plots (to a list) and name them. Restore default par values so recordPlot stores each plot individually (although this may only be necessary when I change mfrow)
+      par(old.par)
+      result[[i]] <- recordPlot()
+      names(result)[i] <- paste0("plot_of_", names(genes[i]))
+      }
+  }
+    
+  #drop empty elements from the resulting list (consequence of the threshold element in the input list), This only works if there is only one NULL element in the result list
+  for (i in 1:length(result)) {
+    if (is.null(result[[i]])) {
+      remove.me <- i
+    }
+  }
+  result[remove.me] <- NULL
+  
+  return(result)
+}  
+
+```
+
+
+Define how OTUs cluster based on the EOD phenotypes of interest
+```{r}
+# Desired clusters:
+
+# Complexity: kingsN + sn3   VS   kingsP + mag1 + mag2  
+# Duration: sn3   VS   kingsN + kingsP + mag1 + mag2 
+# Polarity: kingsP + mag2 VS mag1  (kingsN & sn3 are not used, since this feature is exclusive of triphasic EODs)
+
+
+# Complexity
+biphasic <- c("PKINGN", "PSN3")
+triphasic <- c("PKINGP", "PMAG1", "PMAG2")
+
+#Duration
+short_EOD <- c("PSN3")
+long_EOD <- c("PKINGN", "PKINGP", "PMAG1", "PMAG2")
+
+#Polarity
+small_penetrations <- c("PKINGP", "PMAG2")
+large_penetrations <- c("PMAG1")
+
+```
+
+
+Create lists of the samples for each group, based on the EOD phenotypes of interest
+```{r}
+complexity.samples <- samples.per.group(biphasic, triphasic)
+duration.samples <- samples.per.group(short_EOD, long_EOD)
+polarity.samples <- samples.per.group(small_penetrations, large_penetrations)
+
+```
+
+
+Select and save enriched genes in each group for each EOD phenotype
+```{r}
+# Set the desired threshold
+threshold <- 2
+
+complexity.results <- genes.of.interest(complexity.samples, threshold)
+duration.results <- genes.of.interest(duration.samples, threshold)
+polarity.results <- genes.of.interest(polarity.samples, threshold)
+
+```
+
+
+Plot the expression values, save pdf with all plots
+THIS CODE plots the graphs without background color, and each has its own scale
+```{r}
+#These will fail if there are no genes in a list  
+
+# Use these to see each plot by itself
+complexity.plots <- plot.expression(complexity.results)
+duration.plots <- plot.expression(duration.results)
+polarity.plots <- plot.expression(polarity.results)
+
+
+#Because of R reasons, I couldn't save the previous plots in a properly formatted pdf document. I had to basically rerun the plot function again:
+
+#concatenate all the results in onle file
+all.results <- c(complexity.results, duration.results, polarity.results)
+
+#save all plots in a pdf file
+outname <- paste0("../Custom_clusters/custom_cluster_plots_no_background__threshold_difference_of_", threshold, "___", stat, ".pdf")
+pdf(file=outname)
+#set par details for each plot
+#save 4 graphs per page
+par(mfrow=c(2, 2))
+par(cex=0.6)
+par(mar=c(7,4,4,2))
+
+
+for (i in 1:length(all.results)) {
+  
+  #get the threshold value
+    if (! is.integer(dim(all.results[[i]]))) {
+  
+    t <- all.results[[i]]
+  
+  } else {
+  
+  #plot the first gene and all the aesthetics  
+  data.plot = all.results[[i]]
+  ymin = min(data.plot, na.rm = TRUE); ymax = max(data.plot, na.rm = TRUE);
+  title = paste(names(all.results[i]), ', ', length(data.plot[,1]), " genes", sep='')
+  subtitle <- paste0(stat, " difference between groups = ", t)
+  plot_label <- paste(title, "\n", subtitle)
+  
+  #plot the first gene, with title and y axis    
+  plot(as.numeric(data.plot[1,]), type='l', ylim=c(ymin,ymax), main=plot_label, col='lightgray', xaxt='n', xlab='', ylab='centered log2(TMM + 1)')
+   
+  #add the samples' names to the x axis     
+  axis(side=1, at=1:length(data.plot[1,]), labels=colnames(data.plot), las=2)
+      
+#plot the remaining genes
+  for(r in 2:length(data.plot[,1])) {
+    points(as.numeric(data.plot[r,]), type='l', col='lightgray')
+  }
+      
+#plot the line of mean expression values
+  points(as.numeric(colMeans(data.plot)), type='o', col='blue')
+  
+  }  
+}
+  
+dev.off()
+
+#restore par defaults if the script is extended. This may not be necessary, par changes were done inside the pdf device
+par(old.par)
+```
+
+
+Plot the expression values, save pdf with all plots
+THIS CODE plots the graphs WITH background color, a common scale, and several other tweaks, inspired by Traeger et al 2015, BMC Genomics, fig 3)
+```{r}
+#get all data to plot in a single list, so it's easier to unify scales and sizes, etc
+data.plot.all <- list(complexity.results[[2]], complexity.results[[3]], duration.results[[2]], duration.results[[3]], polarity.results[[2]], polarity.results[[3]])
+names(data.plot.all) <- names(c(complexity.results[2], complexity.results[3], duration.results[2], duration.results[3], polarity.results[2], polarity.results[3]))
+
+#get overall minimum (rounded to the lowest 0.5)
+ymin <- data.plot.all %>% lapply(., FUN = min, na.rm =TRUE) %>% unlist() %>% min() %>% round_any(., 0.5, floor)
+
+#Maximum is fixed at 6.5, this covers every genes but two from smaller penetrations (otherwise most plots get a large empty space on top. Traeger's plots are cut at the top as well)
+ymax <- 6.5
+
+
+#save all plots in a pdf file
+#there are some discrepancies between the output in Rstudio plot window and the saved pdf (size of some fonts, borders around the rectangles)
+outname1 <- paste0("../Custom_clusters/custom_cluster_plots__threshold_difference_of_", threshold, "___", stat, ".pdf")
+pdf(file=outname1)
+
+
+#Set the general plot options
+#mfrow: rows and columns of plots
+par(mfrow=c(3, 2),
+#mai: margins in inches between the plot region and the outer limit (bottom, left, top, right)
+  mai=c(0.8, 0.8, 0.6, 0.0),
+#xaxs, yaxs: space between the plot area and the axes lines. i=no space. r=4%. r is default
+  xaxs="r", yaxs="i")
+
+
+for (i in names(data.plot.all)) {
+  
+  #get the threshold value and the limits for the grey box for each plot. The gray box indicates the samples that belong to the enriched phenotype
+  if (grepl("biphasic", i)) {
+    t <- complexity.results[[1]]
+    x1.1.rec = 0
+    x1.2.rec = 3.5
+    x2.1.rec = 9.5
+    x2.2.rec = 11.5
+    y1.2.rec = ymin+1
+    y2.2.rec = ymin+1
+ 
+    } else if (grepl("triphasic", i)) {
+    t <- complexity.results[[1]]
+    x1.1.rec = 3.5
+    x1.2.rec = 9.5
+    x2.1.rec = 0
+    x2.2.rec = 0
+    y1.2.rec = ymin+1
+    y2.2.rec = ymin+1
+
+    }  else if (grepl("short_EOD", i)) {
+    t <- duration.results[[1]] 
+    x1.1.rec = 9.5
+    x1.2.rec = 11.5
+    x2.1.rec = 0
+    x2.2.rec = 0
+    y1.2.rec = ymin+1
+    y2.2.rec = ymin+1
+
+    }  else if (grepl("long_EOD", i)) {
+    t <- duration.results[[1]] 
+    x1.1.rec = 0
+    x1.2.rec = 9.5
+    x2.1.rec = 0
+    x2.2.rec = 0
+    y1.2.rec = ymin+1
+    y2.2.rec = ymin+1
+
+    }  else if (grepl("small_penetrations", i)) {
+    t <- polarity.results[[1]]
+    x1.1.rec = 3.5
+    x1.2.rec = 5.5
+    x2.1.rec = 7.5
+    x2.2.rec = 9.5
+    y1.2.rec = ymin+1
+    y2.2.rec = ymin+1
+
+    }  else if (grepl("large_penetrations", i)) {
+    t <- polarity.results[[1]]
+    x1.1.rec = 5.5
+    x1.2.rec = 7.5
+    x2.1.rec = 0
+    x2.2.rec = 0
+    y1.2.rec = ymin+1
+    y2.2.rec = ymin+1
+
+    }  else  stop("Some names to plot don't match the expected phenotypes. This is a critical error", call. = FALSE) 
+  
+      #plot the first gene and all the aesthetics
+      #set par details for each plot
+      #par(cex=0.6)
+      #par(mar=c(7,4,4,2))
+  
+      par(mgp=c(1.9, 0.8, 0))
+        
+      title = names(data.plot.all[i])
+      subtitle <- paste0(stat, " difference between groups = ", t)
+      plot_label <- paste(title, "\n", subtitle)
+        
+      #plot the first gene (necessary to plot the axes), with title and y axis
+      plot(as.numeric(data.plot.all[[i]][1,]), type='l',  ylim=c(ymin, ymax), main=plot_label, xaxt='n', xlab='', ylab='centered log2(TMM + 1)')
+
+      #add the samples' names to the x axis
+      axis(side=1, at=1:ncol(data.plot.all[[i]]), labels=colnames(data.plot.all[[i]]), las=2)
+      
+      
+      # draw background rectangles (predefined)
+        rect(0, ymin, 3.5, ymax, col="#30D5C8DD", lwd=0, border = NA)
+        rect(3.5, ymin, 5.5, ymax, col="#0000FFDD", lwd=0, border = NA) 
+        rect(5.5, ymin, 7.5, ymax, col="#FF4500DD", lwd=0, border = NA)
+        rect(7.5, ymin, 9.5, ymax, col="#FFD700DD", lwd=0, border = NA)
+        rect(9.5, ymin, 11.5, ymax, col="#E234E2DD", lwd=0, border = NA)
+        
+    #plot the genes
+      for(r in 1:nrow(data.plot.all[[i]])) {
+        points(as.numeric(data.plot.all[[i]][r,]), type='l', col='#FFFFFF')
+      }
+        
+     # draw foreground alpha rectangles (predefined)
+      rect(0, ymin, 3.5, ymax, col="#30D5C826", lwd=0, border = NA) 
+      rect(3.5, ymin, 5.5, ymax, col="#0000FF26", lwd=0, border = NA)
+      rect(5.5, ymin, 7.5, ymax, col="#FF450026", lwd=0, border = NA)
+      rect(7.5, ymin, 9.5, ymax, col="#FFD70026", lwd=0, border = NA)
+      rect(9.5, ymin, 11.5, ymax, col="#E234E226", lwd=0, border = NA)
+      
+    #draw rectangles that highlight samples that belong to enriched phenotype (see if statements above)
+      #rect(x1.1.rec, ymin, x1.2.rec, y1.2.rec, col="#BEBEBE", lwd=0, border = NA)
+      #rect(x2.1.rec, ymin, x2.2.rec, y2.2.rec, col="#BEBEBE", lwd=0, border = NA)
+
+    #plot the line of mean expression values
+      points(as.numeric(colMeans(data.plot.all[[i]])), type='o', pch=16, col='#389D25', lwd = 1.9, cex = 1.25)
+        
+    #add the number of genes and a border to the entire plot
+      text(1.05, (ymin+0.6), nrow(data.plot.all[[i]]), cex=1, col='#000000')
+      box()
+}  
+
+dev.off()
+
+```
+
+
+save the workspace
+```{r}
+save.image(file = "Clustering_of_DEG.RData")
+```

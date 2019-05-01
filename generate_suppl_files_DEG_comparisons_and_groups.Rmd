@@ -1,0 +1,129 @@
+---
+title: "Wrangle data for suplementary files with all DEG from comparisons and groups"
+author: "Mauricio Losilla"
+date: "March 16, 2019"
+output: html_document
+---
+
+Load packages and set wd
+```{r setup}
+# Load required libraries
+library(knitr) #only needed to knit Rmarkdown file
+library(dplyr)
+library(xlsx)
+
+session.Info <- sessionInfo()
+
+#set the wd. This is where the files with the read counts and the output folder are
+knitr::opts_knit$set(root.dir = "/home/mau/Dropbox (MSU Efish Lab)/Mau/Research/Differential expression/Analyses/05_Differential_Gene_Expression/R") #set this one if knitting the R markdown file
+setwd("/home/mau/Dropbox (MSU Efish Lab)/Mau/Research/Differential expression/Analyses/05_Differential_Gene_Expression/R") #set this one if using the console, or if changing the wd for only one chunk of code in the .Rmd file
+
+#the following will allow par changes for specific plots
+#knitr::opts_knit$set(global.par = TRUE)
+```
+
+
+Import Data: geneID-to-name dictionary
+```{r}
+
+#Import the file that lists Pking GeneIDs, gene names & symbols
+Pkings.gene.name.type <- read.table("Dic.PkingEntrezGeneID-to-name_symbol_type.txt", header = TRUE, row.names = NULL, sep = "\t", col.names = c("Pking_Entrez_geneID", "Pking_gene_name", "Pking_gene_symbol", "type_of_gene"), colClasses = c("character", "character", "character", "character"), quote = "")
+
+```
+
+
+Import Data from Trinity: DEG from each comparison
+```{r}
+#make a vector with the names of the files to import
+DEG.files <- list.files(path = "../genes_edgeR/", pattern = "RSEM.gene.counts.matrix.*results.P0.001_C2.DE.subset", full.names = TRUE)
+
+#extract the names of each comparison
+comparisons <- lapply(DEG.files, function(x) {sub(".*matrix.", "", x) %>% sub(".edge.*", "", .)})
+
+#Import the DEG for each comparison
+DEG.all <- lapply(DEG.files, function(x) as.data.frame(read.table(x, header = TRUE, row.names = NULL, sep = "\t", quote = "", stringsAsFactors =FALSE)))
+DEG.all <- lapply(DEG.all, function(x) {names(x)[names(x) == 'row.names'] <- "Pking_Entrez_geneID"; x})
+
+#name each data frame with the respective comparison
+names(DEG.all) <- comparisons
+```
+
+
+Import Data: DEG from each group (cluster)
+```{r}
+#make a vector with the names of the files to import
+groups.files <- list.files(path = "../Custom_clusters/clusters_logTMM/", pattern = "enriched_in*", full.names = TRUE)
+
+#extract the names of each phenotype
+phenotypes <- lapply(groups.files, function(x) {sub(".*_in_", "", x) %>% sub("_samples__.*", "", .)})
+
+#Import the DEG for each group
+groups.all <- lapply(groups.files, function(x) as.data.frame(read.table(x, header = TRUE, row.names = NULL, sep = "\t", quote = "", stringsAsFactors =FALSE)))
+groups.all <- lapply(groups.all, function(x) {names(x)[names(x) == 'row.names'] <- "Pking_Entrez_geneID"; x})
+
+#name each data frame with the respective phenotype
+names(groups.all) <- phenotypes
+```
+
+
+The upregulated genes in the groups are listed per phenotype. Merge the phenotypes into their EOD feature
+```{r}
+##add a column with the phenotype
+groups.all.phen <- groups.all
+groups.all.phen <- lapply(names(groups.all.phen), function(x) {groups.all.phen[[x]]["enriched phenotype"] <- x; groups.all.phen[[x]]})
+names(groups.all.phen) <- phenotypes
+
+
+## We are ready to merge the phenotypes per feature
+
+#make vector with the features
+#features <- c("complexity", "duration", "polarity")
+
+#create an empty list to hold the results
+groups.feature <- list()
+
+#merge the phenotypes per feature
+groups.feature[["duration"]] <- groups.all.phen$short_EOD %>% bind_rows(., groups.all.phen$long_EOD)
+groups.feature[["polarity"]] <- groups.all.phen$small_penetrations %>% bind_rows(., groups.all.phen$large_penetrations)
+groups.feature[["complexity"]] <- groups.all.phen$biphasic %>% bind_rows(., groups.all.phen$triphasic)
+
+```
+
+
+Add gene name, symbol and type; to 1) the DEG of each comparison, and 2) the DEG of each feature (groups)
+```{r}
+## 1) to the DEG of each comparison
+#add the gene name, symbol and type of gene from the dictionary, and reorder columns
+DEG.all.complete <- lapply(DEG.all, function(x) {left_join(x, Pkings.gene.name.type, by = "Pking_Entrez_geneID") %>% select(c(1, 19:21, 2:18))})
+
+## 2) to the DEG of each feature (groups)
+#add the gene name, symbol and type of gene from the dictionary, and reorder columns
+groups.feature.complete <- lapply(groups.feature, function(x) {left_join(x, Pkings.gene.name.type, by = "Pking_Entrez_geneID") %>% select(c(1, 14:16, 13, 2:12))})
+```
+
+
+save to Xcel files, and save the workspace
+```{r}
+## save the comparisons file
+
+#create empty workbook
+wb <- createWorkbook()
+saveWorkbook(wb, "Suppl_file_DEG_all_comparisons.xlsx")
+
+#save the DEG from each comparison, in a tab with the name of the comparison
+lapply(names(DEG.all.complete), function(x) write.xlsx(DEG.all.complete[[x]], "Suppl_file_DEG_all_comparisons.xlsx", sheetName = x, col.names = TRUE, row.names = FALSE, append = TRUE))
+
+
+## save the features (groups) file
+
+#create empty workbook
+wb <- createWorkbook()
+saveWorkbook(wb, "Suppl_file_DEG_groups.xlsx")
+
+#save the DEG from each feature, in a tab with the name of the feature
+lapply(names(groups.feature.complete), function(x) write.xlsx(groups.feature.complete[[x]], "Suppl_file_DEG_groups.xlsx", sheetName = x, col.names = TRUE, row.names = FALSE, append = TRUE))
+
+
+#save the workspace
+save.image(file = "generate_suppl_files_DEG_comparisons_and_groups.RData")
+```

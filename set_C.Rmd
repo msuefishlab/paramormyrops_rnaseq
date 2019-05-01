@@ -1,0 +1,534 @@
+---
+title: Intersection of upregulated genes & enriched GO terms between informative comparisons
+  and clusters (groups)
+author: "Mauricio Losilla"
+date: "November 2, 2018"
+output: html_document
+---
+
+```{r setup}
+#Load required libraries
+library(plyr)
+library(dplyr)
+library(xlsx)
+
+session.Info <- sessionInfo()
+
+#set the wd. This is where the files with the read counts and the output folder are
+knitr::opts_knit$set(root.dir = "/home/mau/Dropbox (MSU Efish Lab)/Mau/Research/Differential expression/Analyses/09_Intersect_comparisons_clusters/R/") #set this one if knitting the R markdown file
+# setwd("/home/mau/Dropbox (MSU Efish Lab)/Mau/Research/Differential expression/Analyses/09_Intersect_comparisons_clusters/R/") #set this one if using the console, or if changing the wd for only one chunk of code in the .Rmd file
+
+```
+
+
+make a list of lists with each EOD_feature and its informative comparisons
+```{r}
+##I probably chose a convulated way to make this. But it works.
+
+#vector with the informative comparisons
+inf.comparisons <- c("PKINGN_vs_PKINGP", "PKINGN_vs_PSN3", "PKINGP_vs_PMAG1")
+
+#vector with EOD feature contrasted in each comparison
+EOD.features <- c("complexity", "duration", "polarity")
+
+#join them in a data frame
+compar.feat.table <- data.frame(EOD.features, inf.comparisons, stringsAsFactors = FALSE)
+
+#make a list of the comparisons for each EOD feature
+compar.feat.list <- list()
+
+for (i in unique(EOD.features)) {
+  compar.feat.list[[i]] <- as.vector(compar.feat.table[compar.feat.table[, 1]==i, 2])
+}
+
+```
+
+
+make a list of lists with each EOD_feature and its phenotypes
+```{r}
+##I probably chose a convulated way to make this. But it works.
+
+#vector with the phenotypes
+phenotypes <- c("biphasic", "triphasic", "short_EOD", "long_EOD", "small_penetrations", "large_penetrations")
+
+#vector with EOD features, each one twice (because there are 2 phenotypes per EOD feature)
+EOD.features2 <- c(rep("complexity", 2), rep("duration", 2), rep("polarity", 2))
+
+#join them in a data frame
+compar.feat.table2 <- data.frame(EOD.features2, phenotypes, stringsAsFactors = FALSE)
+
+#make a list of the phenotypes for each EOD feature
+compar.feat.list2 <- list()
+
+for (i in unique(EOD.features2)) {
+  compar.feat.list2[[i]] <- as.vector(compar.feat.table2[compar.feat.table2[, 1]==i, 2])
+}
+
+```
+
+
+Import the upregulated genes per OTU in each informative comparison
+```{r}
+#make a vector with the names of the files to import
+inf.files.upreg <- character()
+
+for (c in inf.comparisons) {
+  
+  #extract the two OTUs
+  first <- sub("_vs_.*", "", c)
+  second <- sub(".*_vs_", "", c)
+  
+  file.first <- paste0("RSEM.gene.counts.matrix.", c, ".edgeR.DE_results.P0.001_C2.", first, "-UP.subset")
+  file.second <- paste0("RSEM.gene.counts.matrix.", c, ".edgeR.DE_results.P0.001_C2.", second, "-UP.subset")
+
+  inf.files.upreg <- c(inf.files.upreg, file.first, file.second)
+}
+
+#import the upregulated genes for each OTU
+upreg.genes.OTU <- lapply(paste0("../Input_files/upregulated_genes_comparisons/", inf.files.upreg), function(x) as.data.frame(read.table(x, header = TRUE, row.names = NULL, stringsAsFactors = FALSE)[, 1], stringsAsFactors =FALSE))
+
+for (i in 1:length(upreg.genes.OTU)) { 
+  compar <- sub(".*matrix.", "", inf.files.upreg[i]) %>% sub(".edge.*", "", .)
+  upreg.OTU <- sub(".*C2.", "", inf.files.upreg[i]) %>% sub("-UP.*", "", .)
+  names(upreg.genes.OTU)[i] <- paste0(compar, "_upregulated_in_", upreg.OTU)
+  
+  colnames(upreg.genes.OTU[[i]]) <- "Pking_Entrez_geneID"
+}
+
+```
+
+
+Import the lists of upregulated genes clustered by phenotype
+```{r}
+#Import the upregulated genes per EOD feature (clusters)
+
+#make a vector with the names of the files to import
+files.clusters <- list.files(path = "../Input_files/upregulated_genes_clusters/", pattern = "enriched.*", full.names = TRUE)
+
+#import the upregulated genes for each phenotype
+upreg.genes.phen.clust <- lapply(files.clusters, function(x) as.data.frame(read.table(x, header = TRUE, row.names = NULL, stringsAsFactors = FALSE)[, 1], stringsAsFactors =FALSE))
+
+for (i in 1:length(upreg.genes.phen.clust)) { 
+  upreg.phen <- sub(".*enriched_in_", "", files.clusters[i]) %>% sub("__.*", "", .)
+  names(upreg.genes.phen.clust)[i] <- paste0("upregulated_in_", upreg.phen)
+  
+  colnames(upreg.genes.phen.clust[[i]]) <- "Pking_Entrez_geneID"
+}
+
+```
+
+
+Import the enriched GO terms per OTU in each informative comparison
+```{r}
+#create an ontology list to iterate through
+ontology <- c("BP", "CC", "MF")
+
+
+#import the enriched GO terms for each OTU
+ 
+#make a list to hold the imported files
+enriched.GOids.OTU <- list()
+
+for (i in ontology) {
+  
+  #initialize the list for each ontology
+  enriched.GOids.OTU[[i]] <- list()
+  
+  #make a vector with the name of the files to import
+  inf.files.enrich <- character()
+  
+  for (c in inf.comparisons) {
+  
+    #extract the two OTUs
+    first <- sub("_vs_.*", "", c)
+    second <- sub(".*_vs_", "", c)
+    
+    file.first <- paste0(i, "_ontology_and_", c, "_upregulated_in_", first, "__pval_0.02_.txt")
+    file.second <- paste0(i, "_ontology_and_", c, "_upregulated_in_", second, "__pval_0.02_.txt")
+  
+    inf.files.enrich <- c(inf.files.enrich, file.first, file.second)
+  }
+  
+  #import the GOIDs enriched in each OTU, for ontology i (drop unwanted columns). Note: I had to add quote = "" because R was complaining. Turns out one GO term in one file has an "'" (apostrophe). 
+  enriched.GOids.OTU[[i]] <- lapply(paste0("../Input_files/GOterms_comparisons/", inf.files.enrich), function(x) as.data.frame(read.table(x, header = TRUE, row.names = NULL, sep = "\t", quote = "", stringsAsFactors = FALSE)[, c(1,2,7)], stringsAsFactors =FALSE))
+
+  #name the lists and rename columns
+  for (j in 1:length(enriched.GOids.OTU[[i]])) { 
+    dummy <- sub("__.*", "", inf.files.enrich[j])
+    names(enriched.GOids.OTU[[i]])[j] <- sub(".*and_", "", dummy)
+    colnames(enriched.GOids.OTU[[i]][[j]]) <- c("GO_IDs", "GO_terms", "Genes_annotated_to_the_GOterm")
+  }
+  
+}
+
+```
+
+
+Import the lists of enriched GO terms clustered by phenotype
+```{r}
+#Import the upregulated genes per EOD feature (clusters)
+
+#make a list to hold the imported files
+enriched.GOids.phen <- list()
+
+for (i in ontology) {
+  
+  #make a vector with the names of the files to import
+  files.clusters.GO <- list.files(path = "../Input_files/GOterms_clusters/", pattern = paste0(i, "_ontology.*"), full.names = TRUE)
+
+  #import the upregulated genes for each phenotype
+  enriched.GOids.phen[[i]] <- lapply(files.clusters.GO, function(x) as.data.frame(read.table(x, header = TRUE, row.names = NULL, sep = "\t", quote = "", stringsAsFactors = FALSE)[, c(1,2,7)], stringsAsFactors =FALSE))
+
+  #name the lists and rename columns
+  for (j in 1:length(enriched.GOids.phen[[i]])) { 
+    dummy <- sub(".*ontology_and_", "", files.clusters.GO[j]) %>% sub("__.*", "", .)
+    names(enriched.GOids.phen[[i]])[j] <- dummy
+    colnames(enriched.GOids.phen[[i]][[j]]) <- c("GO_IDs", "GO_terms", "Genes_annotated_to_the_GOterm")
+  }
+}
+
+```
+
+
+Import geneID-to-name dictionary
+```{r}
+
+#Import the file that lists Pking GeneIDs and gene names & types
+Pkings.gene.name.type <- read.table("../Input_files/Dic.PkingEntrezGeneID-to-name_symbol_type.txt", header = TRUE, row.names = NULL, sep = "\t", col.names = c("Pking_Entrez_geneID", "Pking_gene_name", "Pking_gene_symbol", "type_of_gene"), colClasses = c("character", "character", "character", "character"), quote = "")
+
+##added march19, keep the original dictionary with the gene symbol column. Use with list of upregulated genes only
+Pkings.gene.name.type.symbol <- Pkings.gene.name.type
+
+#drop the unnecessary columns from the GeneID-to-name dictionary
+Pkings.gene.name.type <- Pkings.gene.name.type[, c("Pking_Entrez_geneID", "Pking_gene_name", "type_of_gene")]
+```
+
+
+Intersect upregulated genes in each phenotype of each EOD feature. This will take 2 code chunks
+```{r}
+#consolidate the lists to intersect in a list
+
+#build the backbone of the list
+features.lists.upreg.genes <- list()
+
+for (f in unique(EOD.features)) {
+
+  features.lists.upreg.genes[[f]][[compar.feat.list2[[f]][1]]] <- list()
+  features.lists.upreg.genes[[f]][[compar.feat.list2[[f]][2]]] <- list()
+  
+}  
+
+#populate each sublist. this can be automated (and my compar.feat.lists objects from above were geared towards that), but at this point it's easier to populate them one by one.
+features.lists.upreg.genes$complexity$biphasic <- list(upreg.genes.OTU$PKINGN_vs_PKINGP_upregulated_in_PKINGN, upreg.genes.phen.clust$upregulated_in_biphasic_samples)
+names(features.lists.upreg.genes$complexity$biphasic) <- c("PKINGN_vs_PKINGP_upregulated_in_PKINGN", "upregulated_in_biphasic_samples")
+
+features.lists.upreg.genes$complexity$triphasic <- list(upreg.genes.OTU$PKINGN_vs_PKINGP_upregulated_in_PKINGP,  upreg.genes.phen.clust$upregulated_in_triphasic_samples)
+names(features.lists.upreg.genes$complexity$triphasic) <- c("PKINGN_vs_PKINGP_upregulated_in_PKINGP", "upregulated_in_triphasic_samples")
+
+
+features.lists.upreg.genes$duration$short_EOD <- list(upreg.genes.OTU$PKINGN_vs_PSN3_upregulated_in_PSN3, upreg.genes.phen.clust$upregulated_in_short_EOD_samples)
+names(features.lists.upreg.genes$duration$short_EOD) <- c("PKINGN_vs_PSN3_upregulated_in_PSN3", "upregulated_in_short_EOD_samples")
+
+features.lists.upreg.genes$duration$long_EOD <- list(upreg.genes.OTU$PKINGN_vs_PSN3_upregulated_in_PKINGN, upreg.genes.phen.clust$upregulated_in_long_EOD_samples)
+names(features.lists.upreg.genes$duration$long_EOD) <- c("PKINGN_vs_PSN3_upregulated_in_PKINGN", "upregulated_in_long_EOD_samples")
+
+
+features.lists.upreg.genes$polarity$small_penetrations <- list(upreg.genes.OTU$PKINGP_vs_PMAG1_upregulated_in_PKINGP, upreg.genes.phen.clust$upregulated_in_small_penetrations_samples)
+names(features.lists.upreg.genes$polarity$small_penetrations) <- c("PKINGP_vs_PMAG1_upregulated_in_PKINGP", "upregulated_in_small_penetrations_samples")
+
+features.lists.upreg.genes$polarity$large_penetrations <- list(upreg.genes.OTU$PKINGP_vs_PMAG1_upregulated_in_PMAG1, upreg.genes.phen.clust$upregulated_in_large_penetrations_samples)
+names(features.lists.upreg.genes$polarity$large_penetrations) <- c("PKINGP_vs_PMAG1_upregulated_in_PMAG1", "upregulated_in_large_penetrations_samples")
+
+```
+
+
+Intersect the lists per EOD feature and phenotype, and add gene name, type & symbol
+```{r}
+#make a list to hold the results
+upreg.genes.intersected <- list()
+count.upreg.genes.intersected <- list()
+
+for (i in unique(EOD.features)) {
+  
+  upreg.genes.intersected[[i]] <- list()
+  
+  for (j in names(features.lists.upreg.genes[[i]])) {
+    
+    #do an inner join to find the genes shared in all lists
+    upreg.genes.intersected[[i]][[j]] <- join_all(features.lists.upreg.genes[[i]][[j]], by = "Pking_Entrez_geneID", type = "inner")
+    
+    #add gene name, symbol & type (symbol added mar19)
+    upreg.genes.intersected[[i]][[j]] <- left_join(upreg.genes.intersected[[i]][[j]], Pkings.gene.name.type.symbol, by = "Pking_Entrez_geneID")
+    
+    #check for NAs
+    if (length(which(is.na(upreg.genes.intersected[[i]][[j]][, 2]))) != 0) warning("There are some NA values", call. = FALSE)
+    
+    #Save the breakdown of type of genes
+    count.upreg.genes.intersected[[i]][[j]] <- table(upreg.genes.intersected[[i]][[j]]$type_of_gene)    
+   
+  } 
+}
+
+
+```
+
+
+Intersect enriched GO terms in each phenotype of each EOD feature. This will take 2 code chunks
+```{r}
+#consolidate the lists to intersect in a list
+
+#build the backbone of the list
+features.lists.enriched.GOids <- list()
+
+for (f in ontology) {
+
+  #populate the sublist for each ontology. this can be automated, but at this point it's easier to populate them one by one.
+  features.lists.enriched.GOids[[f]]$intersect_biphasic <- list(enriched.GOids.OTU[[f]]$PKINGN_vs_PKINGP_upregulated_in_PKINGN, enriched.GOids.phen[[f]]$enriched_in_biphasic_samples)
+  names(features.lists.enriched.GOids[[f]]$intersect_biphasic) <- c("PKINGN_vs_PKINGP_enriched_in_PKINGN", "enriched_in_biphasic_samples")
+  
+  features.lists.enriched.GOids[[f]]$intersect_triphasic <- list(enriched.GOids.OTU[[f]]$PKINGN_vs_PKINGP_upregulated_in_PKINGP, enriched.GOids.phen[[f]]$enriched_in_triphasic_samples)
+  names(features.lists.enriched.GOids[[f]]$intersect_triphasic) <- c("PKINGN_vs_PKINGP_enriched_in_PKINGP", "enriched_in_triphasic_samples")
+  
+  
+  features.lists.enriched.GOids[[f]]$intersect_short_EOD <- list(enriched.GOids.OTU[[f]]$PKINGN_vs_PSN3_upregulated_in_PSN3, enriched.GOids.phen[[f]]$enriched_in_short_EOD_samples)
+  names(features.lists.enriched.GOids[[f]]$intersect_short_EOD) <- c("PKINGN_vs_PSN3_enriched_in_PSN3", "enriched_in_short_EOD_samples")
+  
+  features.lists.enriched.GOids[[f]]$intersect_long_EOD <- list(enriched.GOids.OTU[[f]]$PKINGN_vs_PSN3_upregulated_in_PKINGN, enriched.GOids.phen[[f]]$enriched_in_long_EOD_samples)
+  names(features.lists.enriched.GOids[[f]]$intersect_long_EOD) <- c("PKINGN_vs_PSN3_enriched_in_PKINGN", "enriched_in_long_EOD_samples")
+  
+  
+  features.lists.enriched.GOids[[f]]$intersect_small_penetrations <- list(enriched.GOids.OTU[[f]]$PKINGP_vs_PMAG1_upregulated_in_PKINGP, enriched.GOids.phen[[f]]$enriched_in_small_penetrations_samples)
+  names(features.lists.enriched.GOids[[f]]$intersect_small_penetrations) <- c("PKINGP_vs_PMAG1_upregulated_in_PKINGP", "enriched_in_small_penetrations_samples")
+  
+  features.lists.enriched.GOids[[f]]$intersect_large_penetrations <- list(enriched.GOids.OTU[[f]]$PKINGP_vs_PMAG1_upregulated_in_PMAG1, enriched.GOids.phen[[f]]$enriched_in_large_penetrations_samples)
+  names(features.lists.enriched.GOids[[f]]$intersect_large_penetrations) <- c("PKINGP_vs_PMAG1_upregulated_in_PMAG1", "enriched_in_large_penetrations_samples")
+
+
+}  
+```
+
+
+Intersect the lists of enriched GO terms per EOD feature and phenotype
+```{r}
+#make a list to hold the results
+enriched.GOids.intersected <- list()
+
+for (i in ontology) {
+  
+  enriched.GOids.intersected[[i]] <- list()
+  
+  for (j in names(features.lists.enriched.GOids[[i]])) {
+    
+    #do an inner join to find the genes shared in all lists. Notice that this will duplicate the columns "GO_terms" and "Genes_annotated_to_the_GOterm"
+    enriched.GOids.intersected[[i]][[j]] <- join_all(features.lists.enriched.GOids[[i]][[j]], by = "GO_IDs", type = "inner") 
+ 
+    if (nrow(enriched.GOids.intersected[[i]][[j]]) == 0) {
+  
+    #these are empty data frames. remove duplicated columns
+    enriched.GOids.intersected[[i]][[j]] <- enriched.GOids.intersected[[i]][[j]][, !duplicated(colnames(enriched.GOids.intersected[[i]][[j]]))]
+     
+    #these are data frames with GO terms. Merge and keep unique values in the duplicated columns. This is important because the Genes_annotated_to_the_GOterm may not be the same, since each comparison had a different universe
+    } else {
+    
+      #find the indexes for each set of duplicated columns
+      cols.GOterms <- colnames(enriched.GOids.intersected[[i]][[j]]) %>% grep("GO_terms", .) %>% dput()
+      cols.genes.annot <- colnames(enriched.GOids.intersected[[i]][[j]]) %>% grep("Genes_annotated_to_the_GOterm", .) %>% dput()
+      
+      #create placeholder columns to store these processes
+      enriched.GOids.intersected[[i]][[j]]$temp.terms <- NA
+      enriched.GOids.intersected[[i]][[j]]$temp.genes <- NA
+      
+      #go to each row
+      for (k in 1:nrow(enriched.GOids.intersected[[i]][[j]])) {
+        
+        #merge and keep unique values for the GO_terms columns
+        enriched.GOids.intersected[[i]][[j]]$temp.terms[k] <- paste(enriched.GOids.intersected[[i]][[j]][k, cols.GOterms], collapse = ";") %>% {strsplit(., ";")[[1]]} %>% unique()
+          
+        #merge but keep only those genes annotated to a GO term in both GO terms sources
+        dummy1 <- enriched.GOids.intersected[[i]][[j]][cols.genes.annot[1]][k, ] %>% strsplit(., ",") %>% data.frame(., stringsAsFactors = FALSE) %>% {'names<-'(., "Genes_annotated_to_the_GOterm")}
+
+        dummy2 <- enriched.GOids.intersected[[i]][[j]][cols.genes.annot[2]][k, ] %>% strsplit(., ",") %>% data.frame(., stringsAsFactors = FALSE) %>% {'names<-'(., "Genes_annotated_to_the_GOterm")}
+
+        enriched.GOids.intersected[[i]][[j]]$temp.genes[k] <- inner_join(dummy1, dummy2, by = "Genes_annotated_to_the_GOterm") %>% apply(., 2, paste, collapse = ",") 
+        
+      }
+ 
+      #remove unnecessary columns
+      enriched.GOids.intersected[[i]][[j]] <- enriched.GOids.intersected[[i]][[j]][ , !(colnames(enriched.GOids.intersected[[i]][[j]]) %in% c("GO_terms", "Genes_annotated_to_the_GOterm"))]
+      
+      #rename the columns
+      colnames(enriched.GOids.intersected[[i]][[j]]) <- c("GO_IDs", "GO_terms", "Genes_annotated_to_the_GOterm")
+    }
+  }
+}
+
+```
+
+
+Save the objects with intersected upregulated genes & GO terms
+```{r}
+#save the intersected upregulated genes
+for (i in names(upreg.genes.intersected)) {
+  
+  for (j in names(upreg.genes.intersected[[i]])) {
+
+    outfile = paste0("../Intersected_genes/intersected_", i, "_upregulated_in_", j, ".txt")
+    write.table(upreg.genes.intersected[[i]][[j]], file=outfile, quote=F, sep="\t", row.names = FALSE, col.names = TRUE)
+  }
+}
+
+
+#save the intersected GO terms
+for (i in ontology) {
+  
+  for (j in names(enriched.GOids.intersected[[i]])) {
+
+    outfile = paste0("../Intersected_GOterms/", i, "_ontology_and_enriched_in_", j, ".txt")
+    write.table(enriched.GOids.intersected[[i]][[j]], file=outfile, quote=F, sep="\t", row.names = FALSE, col.names = TRUE)
+  }
+}
+```
+
+
+Nov18: I saved the intersected upregulated GO terms to tab separated text files in the previous code chunk. Here I want to save the same data to an excel file
+```{r}
+#First add "Ontology" and "Enriched_OTU" columns to the data
+enriched.GOids.intersected.condensed <- list()
+
+for (i in names(enriched.GOids.intersected)) {
+  
+  for (j in names(enriched.GOids.intersected[[i]])) {
+    
+    upreg.phen <- sub(".*intersect_", "", j)
+    enriched.GOids.intersected.condensed[[i]][[j]] <- enriched.GOids.intersected[[i]][[j]] %>% mutate(., "Ontology" = i, "Enriched_phenotype" = upreg.phen) %>% dplyr::select(., Ontology, Enriched_phenotype, everything())
+   
+  }
+}  
+
+
+enriched.GOids.intersected.excel <- list()
+
+#merge the phenotypes per EOD_feature. These will be the sheets in the excel file
+for (i in ontology) {
+
+      enriched.GOids.intersected.excel[["complexity"]] <- enriched.GOids.intersected.excel[["complexity"]] %>% bind_rows(., enriched.GOids.intersected.condensed[[i]]$intersect_biphasic) %>% bind_rows(., enriched.GOids.intersected.condensed[[i]]$intersect_triphasic)
+  
+  enriched.GOids.intersected.excel[["duration"]] <- enriched.GOids.intersected.excel[["duration"]] %>% bind_rows(., enriched.GOids.intersected.condensed[[i]]$intersect_short_EOD) %>% bind_rows(., enriched.GOids.intersected.condensed[[i]]$intersect_long_EOD)
+    
+  enriched.GOids.intersected.excel[["polarity"]] <- enriched.GOids.intersected.excel[["polarity"]] %>% bind_rows(.,  enriched.GOids.intersected.condensed[[i]]$intersect_small_penetrations) %>% bind_rows(., enriched.GOids.intersected.condensed[[i]]$intersect_large_penetrations)
+    
+}
+
+
+#save the GO enrichment results
+outfile = paste0("../Intersected_GO_terms.xlsx")
+
+for (i in EOD.features) {
+  
+  if (nrow(enriched.GOids.intersected.excel[[i]]) > 0) {
+  
+  write.xlsx(enriched.GOids.intersected.excel[[i]], outfile, sheetName = i, col.names = TRUE, row.names = FALSE, append = TRUE)
+  }
+    
+}
+
+```
+
+
+Nov18: Save an excel file with frequencies of upregulated genes annotated to enriched GO terms
+```{r}
+#prepare the data
+enriched.GOids.genes.annot <- list()
+
+for (i in names(enriched.GOids.intersected)) {
+  
+  for (j in names(enriched.GOids.intersected[[i]])) {
+    
+    upreg.phen <- sub(".*intersect_", "", j)
+    
+    #the code fails for empty data frames
+    if (nrow(enriched.GOids.intersected[[i]][[j]]) > 0) {
+    
+      #collapse all genes into a vector, calculate frequencies, convert to data frame, sort by frequency
+      enriched.GOids.genes.annot[[i]][[j]] <- enriched.GOids.intersected[[i]][[j]]$Genes_annotated_to_the_GOterm %>% strsplit(., ",") %>% unlist() %>% table() %>% as.data.frame(., stringsAsFactors = FALSE) %>% dplyr::select(., Pking_Entrez_geneID = 1, Frequency = 2) %>% dplyr::arrange(., -Frequency)
+      
+      #add "Ontology" and "Enriched_phenotype" columns to the data, reorder columns
+      enriched.GOids.genes.annot[[i]][[j]] <- enriched.GOids.genes.annot[[i]][[j]] %>% mutate(., "Ontology" = i, "Enriched_phenotype" = upreg.phen) %>% dplyr::select(., Ontology, Enriched_phenotype, everything())
+      
+      #add gene name & type, reorder columns
+      enriched.GOids.genes.annot[[i]][[j]] <- left_join(enriched.GOids.genes.annot[[i]][[j]], Pkings.gene.name.type, by = "Pking_Entrez_geneID") %>% dplyr::select (-Frequency, everything())
+   
+    } else {
+      
+      #the following code is simply to give empty tables the same format as the ones with data
+      enriched.GOids.genes.annot[[i]][[j]] <- enriched.GOids.intersected[[i]][[j]]$Genes_annotated_to_the_GOterm %>% as.data.frame(., stringsAsFactors = FALSE) %>% rep(., 2) %>% as.data.frame(., stringsAsFactors = FALSE) %>% dplyr::select(., Pking_Entrez_geneID = 1, Frequency = 2) 
+      
+      enriched.GOids.genes.annot[[i]][[j]] <- enriched.GOids.genes.annot[[i]][[j]] %>% mutate(., "Ontology" = i, "Enriched_phenotype" = upreg.phen, Pking_gene_name = 4, type_of_gene = 5) %>% dplyr::select(., Ontology, Enriched_phenotype, everything()) %>% dplyr::select(., -Frequency, everything())
+      
+    }
+  }
+}  
+
+# consolidate the data in an excel-friendly manner
+enriched.GOids.genes.annot.excel <- list()
+
+#merge the phenotypes per EOD_feature. These will be the sheets in the excel file
+for (i in names(enriched.GOids.genes.annot)) {
+
+      enriched.GOids.genes.annot.excel[["complexity"]] <- enriched.GOids.genes.annot.excel[["complexity"]] %>% bind_rows(., enriched.GOids.genes.annot[[i]]$intersect_biphasic) %>% bind_rows(., enriched.GOids.genes.annot[[i]]$intersect_triphasic)
+  
+  enriched.GOids.genes.annot.excel[["duration"]] <- enriched.GOids.genes.annot.excel[["duration"]] %>% bind_rows(., enriched.GOids.genes.annot[[i]]$intersect_short_EOD) %>% bind_rows(., enriched.GOids.genes.annot[[i]]$intersect_long_EOD)
+    
+  enriched.GOids.genes.annot.excel[["polarity"]] <- enriched.GOids.genes.annot.excel[["polarity"]] %>% bind_rows(.,  enriched.GOids.genes.annot[[i]]$intersect_small_penetrations) %>% bind_rows(., enriched.GOids.genes.annot[[i]]$intersect_large_penetrations)
+    
+}
+
+
+#save the annotated genes frequencies
+outfile = paste0("../Intersected_GO_terms_genes_annotated.xlsx")
+
+for (i in EOD.features) {
+  
+  if (nrow(enriched.GOids.genes.annot.excel[[i]]) > 0) {
+  
+  write.xlsx(enriched.GOids.genes.annot.excel[[i]], outfile, sheetName = i, col.names = TRUE, row.names = FALSE, append = TRUE)
+  }
+    
+}
+
+```
+
+
+Mar19: I saved the intersected upregulated genes (with gene symbols) to tab separated text files in a previous code chunk. Here I want to save the same data to an excel file, for the supplementary information. 
+```{r}
+## Merge the phenotypes into their EOD feature
+
+#add a column with the phenotype
+upreg.genes.intersected.phen <- upreg.genes.intersected
+for (i in names(upreg.genes.intersected.phen)) {
+    upreg.genes.intersected.phen[[i]] <- lapply(names(upreg.genes.intersected.phen[[i]]), function (x) {upreg.genes.intersected.phen[[i]][[x]]["enriched phenotype"] <- x; upreg.genes.intersected.phen[[i]][[x]]})
+    names(upreg.genes.intersected.phen[[i]]) <- names(upreg.genes.intersected[[i]])
+}
+
+# merge the phenotypes per feature
+upreg.genes.setC <- list()
+for (i in names(upreg.genes.intersected.phen)) {
+  upreg.genes.setC[[i]] <- upreg.genes.intersected.phen[[i]][[1]] %>% bind_rows(., upreg.genes.intersected.phen[[i]][[2]])
+}  
+
+##Save to excel
+#create empty workbook
+wb <- createWorkbook()
+saveWorkbook(wb, "../Intersected_genes.xlsx")
+
+#save the intersected genes for each feature, in a tab with the name of the feature
+lapply(names(upreg.genes.setC), function(x) write.xlsx(upreg.genes.setC[[x]], "../Intersected_genes.xlsx", sheetName = x, col.names = TRUE, row.names = FALSE, append = TRUE))
+
+```
+
+
+Save the workspace
+```{r}
+#save the workspace
+save.image(file = "Intersections.RData")
+```

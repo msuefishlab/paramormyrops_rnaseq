@@ -1,0 +1,723 @@
+---
+title: "GO enrichment analyses with topGO for all 10 DGE comparisons"
+author: "Mauricio Losilla"
+date: "October 31, 2018"
+output: html_document
+---
+
+```{r setup}
+# Load required libraries
+library(knitr) #only needed to knit Rmarkdown file
+library(plyr)
+library(dplyr)
+library(topGO)
+library(testthat)
+library(ggplot2)
+library(gridExtra)
+library(stringr)
+library(GO.db)
+library(xlsx)
+
+session.Info <- sessionInfo()
+
+#set the wd. This is where the files with the read counts and the output folder are
+knitr::opts_knit$set(root.dir = "/home/mau/Dropbox (MSU Efish Lab)/Mau/Research/Differential expression/Analyses/07_Enrichment_analyses/R") #set this one if knitting the R markdown file
+# setwd("/home/mau/Dropbox (MSU Efish Lab)/Mau/Research/Differential expression/Analyses/07_Enrichment_analyses/R") #set this one if using the console, or if changing the wd for only one chunk of code in the .Rmd file
+
+#the following will allow par changes for specific plots
+#knitr::opts_knit$set(global.par = TRUE)
+```
+
+
+About the Universe:
+The 'universe' is the complete set of gene IDs from which your significant set was chosen
+There are 27610 genes in the genome (RSEM.gene.counts.matrix), but for each for each of the 10 DE analysis, lowly expressed genes were filtered out (run_DE_analysis.pl). Thus, the total genes were 16420-19273 (files genes_edgeR/RSEM.gene.counts.matrix.<comparison>.DE_results. Commands in the file genes_edgeR/RSEM.gene.counts.matrix.<comparison>.EdgeR.Rscript).
+Since I am doing enrichment for each comparison, these are the relevant universes. 
+
+
+Import all 10 universes from each DE analyses
+```{r}
+#make a list with the name of the files to import
+files.univ <- list.files(path = "./universes/", pattern = "RSEM.gene.counts.matrix*")
+
+#import the Pking_EntrezGeneIDs of each file and order the genes
+universes.DEG.Pking <- lapply(paste0("universes/", files.univ), function(x) {
+  read.table(x, header = TRUE, row.names = NULL, stringsAsFactors = FALSE)[, 1] %>% .[order(.)] %>% as.data.frame(., stringsAsFactors = FALSE)  })
+
+for (i in 1:length(universes.DEG.Pking)) {
+  names(universes.DEG.Pking)[i] <- sub(".*matrix.", "", files.univ[i])
+  names(universes.DEG.Pking)[i] <- sub(".edgeR.*", "", names(universes.DEG.Pking[i]))
+  colnames(universes.DEG.Pking[[i]]) <- "Pking_Entrez_geneID"
+}
+
+```
+
+
+Import the dictionaries
+```{r}
+#Import the GeneID to GOID dictionaries
+Dics.Pking.GOterms <- list()
+
+Dics.Pking.GOterms[[1]] <- read.table("dictionaries/Dic.PkingEntrezGeneID-to-GO.BP.txt", header = TRUE, colClasses = c("character", "character"), blank.lines.skip = FALSE, sep = "\t")
+names(Dics.Pking.GOterms)[1] <- "Dic.PkingEntrezGeneID-to-GO.BP"
+
+Dics.Pking.GOterms[[2]] <- read.table("dictionaries/Dic.PkingEntrezGeneID-to-GO.CC.txt", header = TRUE, colClasses = c("character", "character"), blank.lines.skip = FALSE, sep = "\t")
+names(Dics.Pking.GOterms)[2] <- "Dic.PkingEntrezGeneID-to-GO.CC"
+
+Dics.Pking.GOterms[[3]] <- read.table("dictionaries/Dic.PkingEntrezGeneID-to-GO.MF.txt", header = TRUE, colClasses = c("character", "character"), blank.lines.skip = FALSE, sep = "\t")
+names(Dics.Pking.GOterms)[3] <- "Dic.PkingEntrezGeneID-to-GO.MF"
+
+```
+
+
+Import all lists of upregulated genes per OTU, in each comparison
+```{r}
+#Import lists of upregulated genes
+
+#make a list with the names of the files to import
+files.upreg <- list.files(path = "./all_10_DEG_lists/", pattern = "RSEM.gene.*")
+
+#import the upregulated genes for each OTU
+upreg.genes.Pking <- lapply(paste0("all_10_DEG_lists/", files.upreg), function(x) as.data.frame(read.table(x, header = TRUE, row.names = NULL, stringsAsFactors = FALSE)[, 1], stringsAsFactors =FALSE))
+
+for (i in 1:length(upreg.genes.Pking)) { 
+  compar <- sub(".*matrix.", "", files.upreg[i]) %>% sub(".edge.*", "", .)
+  upreg <- sub(".*C2.", "", files.upreg[i]) %>% sub("-UP.*", "", .)
+  names(upreg.genes.Pking)[i] <- paste0(compar, "_upregulated_in_", upreg)
+  
+  colnames(upreg.genes.Pking[[i]]) <- "Pking_Entrez_geneID"
+}
+```
+
+
+topGO usage consists of 3 steps:
+
+1) Data preparation: single R object with list of DE genes and gene-to-GO annotations
+2) enrichment tests: statistical tests/methods that deal with the GO topology
+3) analyze results: with summary functions and visualization tools
+
+
+Step 1: Data prep:
+This requires the user to build an object of class topGOdata. I must provide:
+a) The universe and the DEG
+b) The mapping between genes and GO terms (must be custom made in our case)
+c) The GO hierarchical structure. This structure is obtained from the GO.db package
+
+I already have a) (the universes are in universes.DEG.Pking, and the DEG are in upreg.genes.Pking), and c) is done automatically by the package. The following 2 code chunks generate b)
+
+
+Prepare the universes of PkingEntrezGeneIDs-to-GOterms mappings that topGO wants
+```{r}
+#Add GO terms for each ontology to the universe
+
+#create empty lists to hold the results
+universes.DEG.Pking.GOterms <- list()
+counts.universes.DEG.Pking.GOterms <- list()
+
+#create an ontology list to iterate through
+ontology <- c("BP", "CC", "MF")
+
+#create a comparisons vector to iterate through
+comparisons <- dput(names(universes.DEG.Pking))
+
+
+for (c in comparisons) {
+
+    for (i in names(Dics.Pking.GOterms)) {
+      
+      #find the index of the target dic in the Dics list
+      index.list <- match(i, names(Dics.Pking.GOterms))
+      
+      universes.DEG.Pking.GOterms[[c]][[index.list]] <- left_join(universes.DEG.Pking[[c]], Dics.Pking.GOterms[[i]], by = "Pking_Entrez_geneID")
+      names(universes.DEG.Pking.GOterms[[c]])[index.list] <- paste0("GOterms_for_", ontology[index.list], "_ontology")
+    
+      
+      #count annotated & non-annotated genes, and NAs
+      dummy <- vector("list", 3)
+      names(dummy) <- c("annotated", "non.annotated", "NAs")
+      
+      #count annotated genes
+      dummy$annotated <- sum(universes.DEG.Pking.GOterms[[c]][[index.list]]$GO_IDs != "", na.rm = TRUE)
+      
+      #count empty cells (these are genes with a blastp (= Drerio) match, but without an ontology annotation
+      dummy$non.annotated <- sum(universes.DEG.Pking.GOterms[[c]][[index.list]]$GO_IDs == "", na.rm = TRUE)
+      
+       #count NAs (These are ncRNAs or proteins that didn't find a blastp match)
+      dummy$NAs <- length(which(is.na(universes.DEG.Pking.GOterms[[c]][[index.list]]$GO_IDs)))  
+      
+      counts.universes.DEG.Pking.GOterms[[c]][[index.list]] <- dummy
+      names(counts.universes.DEG.Pking.GOterms[[c]])[index.list] <- ontology[index.list]
+      
+      #make sure that all rows are accounted for
+      if (Reduce("+", counts.universes.DEG.Pking.GOterms[[c]][[index.list]]) != nrow(universes.DEG.Pking[[c]])) stop(paste0("The are rows unaccounted for in the universe of ", ontology[index.list], " ontology. This is a critical error"), call. = FALSE)
+    
+      
+      #change NAs to empty cells. I am not sure if empty cells should be taken into account during the enrichment tests, but from TopGO's manual I understand these are dropped. Just in case, I rather pass the list to topGO. I don't know how it deals with NAs, so I prefer to convert them to empty cells
+      universes.DEG.Pking.GOterms[[c]][[index.list]]$GO_IDs <- replace(universes.DEG.Pking.GOterms[[c]][[index.list]]$GO_IDs, is.na(universes.DEG.Pking.GOterms[[c]][[index.list]]$GO_IDs), "")
+      
+    }
+
+}
+
+```
+
+
+The list universes.DEG.Pking.GOterms contains the PkingEntrezGeneID-to-GOterms mappings that topGO needs, for each universe. However, topGO wants them on a specific format, and it's easier to use their import function to convert these files. The import functions loads the input file from disk, so I have to save these mappings to disk and then import them.
+```{r}
+
+#The text file format required by topGO is very simple. For gene-to-GOs mappings, it consists of one row for each gene with the following syntax:
+#    gene_ID<TAB>GO_ID1, GO_ID2, GO_ID3, ...
+
+#Save the universes.DEG.Pking.GOterms mappings, without column names
+for (i in names(universes.DEG.Pking.GOterms)) {
+  
+  for (j in names(universes.DEG.Pking.GOterms[[i]])) {
+
+    outfile = paste0("../all_10_DGE_comparisons/universe_Pking_GOterms_mappings/", i, "_", j, ".txt")
+  write.table(universes.DEG.Pking.GOterms[[i]][[j]], file=outfile, quote=F, sep="\t", row.names = FALSE, col.names = FALSE)
+  
+  }
+}
+
+#Import the recently saved mappings with the format topGO requires
+mappings.topGO <- list()
+
+for (i in names(universes.DEG.Pking.GOterms)) {
+  
+  for (j in names(universes.DEG.Pking.GOterms[[i]])) {
+
+    #get the index of the target ontology
+    index.list <- match(j, names(universes.DEG.Pking.GOterms[[i]]))
+    
+    #import the mappings with the topGO function readMappings
+    infile <- paste0("../all_10_DGE_comparisons/universe_Pking_GOterms_mappings/", i, "_", j, ".txt")
+    mappings.topGO[[i]][[index.list]] <- readMappings(infile)
+    names(mappings.topGO[[i]])[index.list] <- ontology[index.list]
+  
+  }    
+}
+
+# The object returned by readMappings is a named list of character vectors. The list names are the genes identifiers. Each element of the list is a character vector and contains the GO identifiers annotated to the specific gene. 
+
+#It is sufficient for the mapping to contain only the most specific GO annotations. However,topGO can also take as an input files in which all or some ancestors of the most specific GO annotations are included. This redundancy is not making for a faster running time and if possible it should be avoided.
+
+
+```
+
+
+The relevant arguments of the topGOdata object are:
+  ontology: BP, MF or CC
+  description: (optional): description of the study
+  allGenes: the universe. It's a named vector, type numeric or factor. The names attribute contains the genes identifiers. When there are no gene scores (p values), this list codes with factors the genes of interest
+  nodeSize: integer >= 1 (default = 1 [no pruning]). Prunes GO hierarchy from the terms which have less than nodeSize annotated genes (after the true path rule is applied). It is often the case that many GO terms which have few annotated genes are detected to be significantly enriched due to artifacts in the statistical test. These small sized GO terms are of less importance for the analysis and in many cases they can be omitted. The manual says that values between 5 and 10 for the nodeSize parameter yield more stable results.
+  annFUN.gene2GO: use when the annotations are provided as a gene-to-GOs mapping.
+
+I still need the "allGenes" argument. My lists of genes to test enrichment in doesn't have p-values. For this type of data, topGO wants an object that contains 1) the universe and 2) the list of genes to test, coded as factors within the universe. The following code creates this object
+```{r}
+
+#Sanity check: randomly choose any of the gene names from any comparison from the mappings.topGO list and compare it to the universe object. Repeat 1000 times
+for (i in 1:1000) {
+  random.compar <- sample(10, 1)
+  random.ont <- sample(3, 1)
+  geneUniverse <- names(mappings.topGO[[random.compar]][[random.ont]])
+  check <- compare(geneUniverse, universes.DEG.Pking[[random.compar]]$Pking_Entrez_geneID)
+  if (check$message != "Equal")  stop(paste0("The gene list in the ", comparisons[random.compar], " universe object and in the ", ontology[random.ont], " ontology mapping list don't match. This is a critical error"), call. = FALSE)
+}
+
+#create an empty list to hold all 20 "allGenes" argument objects 
+geneLists <- list()
+
+for (c in comparisons) {
+
+    #this is the universe I change the name for easier reading 
+    geneUniverse <- universes.DEG.Pking[[c]]$Pking_Entrez_geneID
+      
+    #build the "allGenes" argument object for each OTU i in each comparison c
+    for (i in names(upreg.genes.Pking)) {
+      
+      #match the lists of upregulated genes to their comparison
+      if (length(grep(c, i)) == 1) {
+      
+          #get the index of the target list of upregulated genes
+          index.enrich <- match(i, names(upreg.genes.Pking))
+            
+          #The object for the "allGenes" argument is a named factor that indicates which genes are interesting and which are not. It contains all the geneIDs in the universe, and those that are of interest are coded with a 1 (the others with 0)
+          geneLists[[index.enrich]] <- factor(as.integer(geneUniverse %in% upreg.genes.Pking[[index.enrich]]$Pking_Entrez_geneID))
+          names(geneLists[[index.enrich]]) <- geneUniverse
+          names(geneLists)[index.enrich] <- i
+            
+          #check that the number of genes in the enriched list matches the genes coded with 1:
+          check <- compare(length(upreg.genes.Pking[[index.enrich]]$Pking_Entrez_geneID), summary(geneLists[[index.enrich]])[["1"]])
+          if (check$message != "Equal")  stop(paste0("The number of genes in ", i, " doesn't match the number of genes coded for enrichment tests. This is a critical error"), call. = FALSE)
+      }                                         
+   }
+}
+
+```
+
+
+
+I now have all I need to build the object of class topGOdata required in step 1: Data prep
+```{r}
+
+#create  an empty list to hold all 60 topGOdata objects (3 ontologies x 20 gene lists)
+topGODataObject.nodeSize.10 <- list()
+
+for (i in ontology) {
+  
+ #get the index of the target ontology
+ index.onto <- match(i, ontology)
+ 
+ #make and name empty lists for each ontology. They will hold the info for the 20 gene lists
+ topGODataObject.nodeSize.10[[index.onto]] <- list()
+ names(topGODataObject.nodeSize.10)[index.onto] <- i
+  
+ #build the topGOdata object for each gene list, for the ontology at hand
+ for (j in names(upreg.genes.Pking)) {
+      
+    #get the index of the target list of enriched genes
+    index.upreg <- match(j, names(upreg.genes.Pking))
+    c <- sub("_upreg.*", "", j)
+    
+    #build the topGOdata object
+    descrip <- paste0("DEG ", j, ". These are the genes upregulated in this OTU and comparison. PkingEntrezGeneIDs were mapped to Drerio GOterms via blastp")
+    
+    topGODataObject.nodeSize.10[[index.onto]][[index.upreg]] <- new("topGOdata", description = descrip, ontology = i, allGenes = geneLists[[j]], annot = annFUN.gene2GO, gene2GO = mappings.topGO[[c]][[i]], nodeSize = 10)
+    names(topGODataObject.nodeSize.10[[index.onto]])[index.upreg] <- j
+    
+    #view a summary of the data:
+    topGODataObject.nodeSize.10[[i]][[j]]
+                      
+  }
+}
+
+
+## Notes:
+
+# There are some functions to access info contained in the topGOdata object. See section 5 from the manual
+
+# The feasible genes of each topGOData object are the genes on which the analysis will be based. These are the genes with a GO annotation that topGO kept. 
+
+# Some DEG aren't annotated, hence they are also discarded among the non-feasible genes. I would say these are overrepresented in the DEG. Food for thought.
+
+# I noticed that often several annotated genes (counts.universes.DEG.Pking.GOterms object) are missing from the feasible genes of the topGOData objects of the respective ontology. I am not sure if the difference comes from the databases that different packages use, or from the way topGO handles GOterm redundancies. Potentially more important, many (maybe around half) of the upregulated genes don't make it to the feasible genes list, probably because they don't have a GO annotation
+
+# All feasible genes for a given ontology are the same, but since the enriched genes for each OTU are different, every comparison needs its own topGOdata object.
+
+
+```
+
+
+Step 2) enrichment tests
+```{r}
+
+# runTest is the function that applies the specified test statistic (statistic = "") and method (algorithm = "")
+
+#statistics: tests can be based on gene counts, scores/ranks, or expression values. I plan to use gene counts. 
+  
+  ## Use: statistic = "fisher" This is Fisher's exact test (the one most commonly used for these analyses)
+
+#algorithms: These deal with the GO graph structure. There are five algorithms that can be used with statistics based on gene counts. 
+  
+  ## I will use the default:  algorithm = "weight01". This takes into account the GO hierarchy (as opposed to the classic algorithm), and is a mixture of the elim and weight algorithms. There isn't a ton of info available (I only found this: http://avrilomics.blogspot.com/2015/07/using-topgo-to-test-for-go-term.html), but this seems like the most sensible approach. 
+
+# p values are not adjusted, nor should they be. There is a brief discussion on section 6.2 of the manual, this is a highlight: "The p-values computed by the runTest function are unadjusted for multiple testing. We do not advocate against adjusting the p-values of the tested groups, however in many cases adjusted p-values might be misleading"
+# Remember that goana doesn't adjust p values either, and thy recommend only trusting small p vales (like trinity does)
+
+
+## Run the enrichment test
+
+#create empty list to hold results
+weight01.fisher.nodeSize.10 <- list()
+
+for (i in names(topGODataObject.nodeSize.10)) {
+  weight01.fisher.nodeSize.10[[i]] <- list()
+  
+  for (j in names(topGODataObject.nodeSize.10[[i]])) {
+    weight01.fisher.nodeSize.10[[i]][[j]] <- runTest(topGODataObject.nodeSize.10[[i]][[j]], algorithm = "weight01", statistic = "fisher")
+    
+  }
+}
+
+
+#The structure of the topGOresult object is quite simple. It contains the p-values of the statistics returned by the test and basic information on the used test statistic/algorithm. The information stored in the topGOdata object is not carried over this object, and both of these objects will be needed by the diagnostic tools
+
+```
+
+
+3) Step 3: analyze results
+```{r}
+### I will first explain the tools I will use and the info they provide, and later I will run their code under the same for loops.
+
+
+## A) The function geneData displays basic info on input data: # of annotated genes, # of significant genes in the OTU of interest, min size of a GO category (nodeSize), and # of significant GO categories 
+
+#create an empty list to hold the results
+BasicInfo.nodeSize.10 <- list()
+
+
+## B) The function score access the GO terms and their p values from a topGOresult object. These can be visualized with a historgram
+
+#create empty lists to hold the results
+pVals.nodeSize.10 <- list()
+pVals.hist.nodeSize.10 <- list()
+
+
+## C) The function GenTable summarizes the results from one or more tests applied to the same topGOdata object. Results sorted by argument "ranksOf = "weight01" ", which are the pvalues of the results using the weight01 method
+
+#create empty lists to hold the results
+allRes.nodeSize.10 <- list()
+
+#choose a pvalue cutoff
+pval <- 0.02
+
+
+## D) Visualizing the GO structure
+
+# An insightful way of looking at the results of the analysis is to investigate how the significant GO terms are distributed over the GO graph. This figure shows the subgraph induced by the most significant GO terms (the number is specified by "firstSigNodes"). Significant nodes are represented as rectangles. The plotted graph is the upper induced graph generated by these significant nodes. Rectangle color represents the relative significance, ranging from dark red (most significant) to bright yellow (least significant). For each node, some basic information is displayed. The first two lines show the GO identifier and a trimmed GO name. In the third line the raw p-value is shown. The forth line is showing the number of significant genes and the total number of genes annotated to the respective GO term.
+
+#There are two functions available. The showSigOfNodes will plot the induced subgraph to the current graphic device. The printGraph is a wraping function of showSigOfNodes and will save the resulting graph into a PDF or PS file
+
+#create empty lists to hold the results
+GOgraph.nodeSize.10 <- list()
+
+
+#run A, B, C, D
+for (i in names(weight01.fisher.nodeSize.10)) {
+  BasicInfo.nodeSize.10[[i]] <- list()
+  pVals.nodeSize.10[[i]] <- list()
+  pVals.hist.nodeSize.10[[i]] <- list()
+  allRes.nodeSize.10[[i]] <- list()
+  GOgraph.nodeSize.10[[i]] <- list()
+  
+  for (j in names(weight01.fisher.nodeSize.10[[i]])) {
+    
+    #A
+    BasicInfo.nodeSize.10[[i]][[j]] <- geneData(weight01.fisher.nodeSize.10[[i]][[j]])
+    
+    #B
+    pVals.nodeSize.10[[i]][[j]] <- score(weight01.fisher.nodeSize.10[[i]][[j]])
+    dummy <- tibble::rownames_to_column(as.data.frame(pVals.nodeSize.10[[i]][[j]]))
+    colnames(dummy) <- c("GO_term", "p-values")
+    pVals.hist.nodeSize.10[[i]][[j]] <- ggplot(dummy, aes(dummy$`p-values`)) + geom_histogram(binwidth = 0.05) + xlab("p-values") 
+    
+    #C
+    dummy <- GenTable(topGODataObject.nodeSize.10[[i]][[j]], weight01 = weight01.fisher.nodeSize.10[[i]][[j]], orderBy = "weight01", ranksOf = "weight01", topNodes = 100)
+    allRes.nodeSize.10[[i]][[j]] <- dummy[which(dummy$weight01 < pval), ]
+
+    #D
+    GOgraph.nodeSize.10[[i]][[j]] <- showSigOfNodes(topGODataObject.nodeSize.10[[i]][[j]], pVals.nodeSize.10[[i]][[j]], firstSigNodes = 5, useInfo = 'all')
+
+    #the output name adds the following info at the end: algorithm, #sig GO terms, chosen argument for useInfo
+    outname <- paste0("../all_10_DGE_comparisons/GOgraphs_nodeSize.10/GOgraph_for_", i, "_ontology_and_", j)
+    sig.nodes <- length(allRes.nodeSize.10[[i]][[j]]$weight01)
+    printGraph(topGODataObject.nodeSize.10[[i]][[j]], weight01.fisher.nodeSize.10[[i]][[j]], firstSigNodes = sig.nodes, fn.prefix = outname, useInfo = "all", pdfSW = TRUE)
+
+  }
+}
+
+## E) Analysing individual GOterms
+
+#Finding the genes annotated with significant GO terms
+
+#this is from: http://avrilomics.blogspot.com/2015/07/using-topgo-to-test-for-go-term.html
+
+
+#to list the genes annotated to a particular set of GO terms; See next chunk
+
+
+#TopGO may report a GO term as significantly enriched which wasn't actually in your input annotations, but rather is an ancestor (in the GO hierarchy) of a GO term in your input annotations.
+#The number of GO terms in the TopGO subset of the GO hierarchy (= the GO terms annotated to genes in the gene 'universe' input file, plus the ancestors of those GO terms in the GO hierarchy) can be found using:
+length(usedGO(topGODataObject.nodeSize.10[[i]][[j]]))
+
+#This should agree with the 'number of nodes' given for the GO graph when you type 'GOdata', as it is the number of nodes in TopGO's internal version of the GO hierarchy (which is filtered just to contain your terms annotated to your gene universe, plus their ancestors).
+```
+
+
+This is a later addition. I want to 1) add the genes annotated to each enriched GO term, and 2) fix the GO term column: topGO reports trimmed GO terms, get the full GOterms from the GO.db package
+```{r}
+#genes annotated to each GO term
+
+for (i in ontology) {
+  
+  for (j in names(allRes.nodeSize.10[[i]])) {
+    
+    #extract the enriched GOids
+    go.terms <- allRes.nodeSize.10[[i]][[j]]$GO.ID
+    
+    #fetch the genes annotated to each of the enriched GOids. These genes are drawn from the universe
+    mygenes <- genesInTerm(topGODataObject.nodeSize.10[[i]][[j]], go.terms) 
+    
+    #keep only those annotated genes that are also upregulated, and add them as a new column
+    for (k in go.terms) {
+        
+      mygenes[[k]] <- data.frame(mygenes[[k]], stringsAsFactors = FALSE) %>% dplyr::select(Pking_Entrez_geneID = 1) %>% inner_join(., upreg.genes.Pking[[j]], by = "Pking_Entrez_geneID") %>% dplyr::pull(Pking_Entrez_geneID) %>% as.vector() %>% paste(., collapse = ",")
+        
+      allRes.nodeSize.10[[i]][[j]]$Genes_annotated_to_the_GOterm[match(k, go.terms)] <- mygenes[[k]]
+        
+    }
+    
+    #the following is necessary to add the columns to those results with no enriched GO terms
+    if (length(grep("Genes_annotated_to_the_GOterm", colnames(allRes.nodeSize.10[[i]][[j]]))) == 0) {  allRes.nodeSize.10[[i]][[j]]$Genes_annotated_to_the_GOterm <- character() }
+    
+
+#fetch the full GOterms
+    dummy <- Term(allRes.nodeSize.10[[i]][[j]]$GO.ID) %>% as.data.frame(stringsAsFactors =FALSE) %>% tibble::rownames_to_column() %>% dplyr::select(GO.ID = 1, GO_term =2)
+    
+    #join the objects with the results and the GO_terms
+    allRes.nodeSize.10[[i]][[j]] <- left_join(allRes.nodeSize.10[[i]][[j]], dummy, by = "GO.ID")
+    
+    #check for NAs in the GO_Term column
+    if (length(which(is.na(allRes.nodeSize.10[[i]][[j]]))) != 0) warning("There are some NA values\n", call. = FALSE)
+    
+    #dump the old Term column and reorder the rest
+    allRes.nodeSize.10[[i]][[j]] <- dplyr::select(allRes.nodeSize.10[[i]][[j]], -Term) %>% dplyr::select(., GO.ID, GO_term, everything())
+
+  }
+}
+
+```
+
+
+Save the summary of the results (note that the graphs were saved previously)
+```{r}
+for (i in names(allRes.nodeSize.10)) {
+  
+  for (j in names(allRes.nodeSize.10[[i]])) {
+
+    #save the GO enrichment results
+    outfile = paste0("../all_10_DGE_comparisons/GO_terms_enrichment_Pkings/", i, "_ontology_and_", j, "__pval_", pval, "_.txt")
+    write.table(allRes.nodeSize.10[[i]][[j]], file=outfile, quote=F, sep="\t", row.names = FALSE, col.names = TRUE)
+  }
+}
+```
+
+
+Oct18: Plot a horizontal bar plot for the significant GO terms in each comparison and ontology (total = 10 comparisons x 3 ontologies = 30). Inspired by Traeger et al 2015, BMC Genomics, fig 4)
+This will need two code chunks. The first one will arrange the data, the second one will plot and save it
+```{r}
+#transform p-values to a more suitable scale (where smaller p-values become larger numbers)
+#drop unnecessary columns
+#join OTUs from the same comparison into a single object (we want a plot per comparison, not per phenotype)
+#change numerical sign of the transformed p-value of one phenotype (because we want to plot each phenotype in opposite directons in the x axis)
+#make sure the GO terms are ordered in the following matter for the plot: within each phenotype, by decreasing magnitude of the absolute value of the transformed pvalue
+
+#copy results to a new list
+pre.plot.full.GOterms <- allRes.nodeSize.10
+
+#for each ontology i
+for (i in ontology) {
+  
+  #for each OTU j
+  for (j in names(pre.plot.full.GOterms[[i]])) {
+    
+    #transform p-values (notice I am using natural logarithm)
+    pre.plot.full.GOterms[[i]][[j]]$pval.transf <- log(1 / as.numeric(pre.plot.full.GOterms[[i]][[j]]$weight01))
+    
+    #Keep only the columns necessary for the plot
+    pre.plot.full.GOterms[[i]][[j]] <- subset(pre.plot.full.GOterms[[i]][[j]], select = c(GO_term, pval.transf))
+    
+    #add a column with the upregulated OTU (uselful for checking that the pvalues have the correct sign (+ or -) when plotting)
+    pre.plot.full.GOterms[[i]][[j]]$OTU <- names(pre.plot.full.GOterms[[i]][j]) %>% sub(".*upregulated_in_", "", .) %>% rep(., nrow(pre.plot.full.GOterms[[i]][[j]]))
+  }
+}
+
+#join OTUs from the same comparison into a single object, change the numerical sign of one OTU, make sure the final order is the desired one
+plot.full.GOterms <- list()
+
+#for each ontology i
+for (i in ontology) {
+  
+    #for each comparison c
+    for (c in comparisons) {
+      
+        #extract the two OTUs
+        first <- sub("_vs_.*", "", c)
+        second <- sub(".*_vs_", "", c)
+      
+        #extract the two lists' names
+        target.lists <- grep(c, names(pre.plot.full.GOterms[[i]])) %>% dput() %>% {names(pre.plot.full.GOterms[[i]][.])}
+        names(target.lists)[1] <- sub(".*upregulated_in_", "", target.lists[1])
+        names(target.lists)[2] <- sub(".*upregulated_in_", "", target.lists[2])
+        
+        #join OTUs from the same comparison into a single object, change the numerical sign of the first OTU. The order is what I want: ranked by OTU, and then by decreasing order of significance
+        plot.full.GOterms[[i]][[c]] <- pre.plot.full.GOterms[[i]][[target.lists[first]]] %>% mutate_if(is.numeric, function(x) -1*x) %>% bind_rows(., pre.plot.full.GOterms[[i]][[target.lists[second]]])
+                
+        #the next step prevents ggplot from ordering the GO terms alphabetically
+        plot.full.GOterms[[i]][[c]]$"GO_term" <- factor(plot.full.GOterms[[i]][[c]]$"GO_term", levels = rev(unique(plot.full.GOterms[[i]][[c]]$"GO_term")))
+        
+        }
+}  
+
+#the data is ready for plotting
+
+```
+
+
+Plot!
+```{r}
+#get overall minimun and maximum (rounded to the lowest/highest 0.5)
+neg <- plot.full.GOterms %>% lapply(., lapply, function(x) min(x[["pval.transf"]], na.rm =TRUE)) %>% unlist() %>% min() %>% round_any(., 0.5, floor)
+
+pos <- plot.full.GOterms %>% lapply(., lapply, function(x) max(x[["pval.transf"]], na.rm =TRUE)) %>% unlist() %>% max() %>% round_any(., 0.5, ceiling)
+
+#I want the positive and negative X axis to be simmetric. Choose the largest of them and use as the min and max value to plot
+xlimit <- max(abs(neg), pos)
+
+#These are the numbers I want in the xaxis ticks
+xticks <- c(-seq(0, -xlimit, by = -2) %>% .[. != 0] %>% rev(), 0, seq(0, xlimit, by = 2) %>% .[. != 0]) 
+xbreaks <- c(seq(0, -xlimit, by = -2) %>% .[. != 0] %>% rev(), 0, seq(0, xlimit, by = 2) %>% .[. != 0])
+
+#make a list to hold plots
+ggplots <- list()
+
+#for each ontology i
+for (i in ontology) {
+  
+  #for each comparison j
+  for (j in comparisons) {
+  
+  #OTUs for each comparison (for the title)
+  first <- sub("_vs_.*", "", j)
+  second <- sub(".*_vs_", "", j)  
+  title <- paste(first, second, sep = "\t \t \t \t")
+
+  #index to store
+  index <- paste(i, j)
+
+ggplots[[index]] <- ggplot(plot.full.GOterms[[i]][[j]], aes(x=GO_term, y=pval.transf)) + geom_bar(stat = "identity", width = 0.3) + coord_flip() + ylab("ln(1/p-value)") + xlab("GO terms") + theme_classic() + scale_y_continuous(limits = c(-xlimit, xlimit), breaks = xbreaks, labels = xticks) + ggtitle(title) + theme(plot.title = element_text(hjust = 0.5, size =10), panel.border = element_rect(colour = "black", size = 1, fill = NA), aspect.ratio = 2.00) + geom_hline(yintercept = 0) + scale_x_discrete(labels = function(x) str_wrap(x, width = 60))
+
+  }
+}
+
+ml <- marrangeGrob(grobs = ggplots, ncol = 3, nrow = 10)
+
+ggsave("../all_10_DGE_comparisons/barplots_comparisons.pdf", ml, width = 100, height = 350, units = "cm", limitsize = FALSE)
+
+```
+
+
+Nov18: I saved the summary of the results to tab separated text files, several code chunks ago. Here I want to save the same data to an excel file
+```{r}
+#First add "Ontology" and "Enriched_OTU" columns to the data
+allRes.nodeSize.10.condensed <- list()
+
+for (i in names(allRes.nodeSize.10)) {
+  
+  for (j in names(allRes.nodeSize.10[[i]])) {
+    
+    upreg.OTU <- sub(".*upregulated_in_", "", j)
+    allRes.nodeSize.10.condensed[[i]][[j]] <- allRes.nodeSize.10[[i]][[j]] %>% mutate(., "Ontology" = i, "Enriched_OTU" = upreg.OTU) %>% dplyr::select(., Ontology, Enriched_OTU, everything())
+   
+  }
+}  
+
+
+allRes.nodeSize.10.excel <- list()
+
+#merge the OTUs per comparison. These will be the sheets in the excel file
+for (c in comparisons) {
+
+  for (i in names(allRes.nodeSize.10.condensed)) {
+  
+    upreg.OTUs <- names(allRes.nodeSize.10.condensed[[i]]) %>% grep(c, ., value =TRUE) %>%  sub(".*upregulated_in_", "", .)
+  
+    list1 <- paste0(c, "_upregulated_in_", upreg.OTUs[1])
+    list2 <- paste0(c, "_upregulated_in_", upreg.OTUs[2])
+    
+    allRes.nodeSize.10.excel[[c]] <- allRes.nodeSize.10.excel[[c]] %>% bind_rows(., allRes.nodeSize.10.condensed[[i]][[list1]]) %>% bind_rows(., allRes.nodeSize.10.condensed[[i]][[list2]])
+    
+  }
+}
+
+#save the GO enrichment results
+outfile = paste0("../all_10_DGE_comparisons/GOterms_all_ontologies_all_phenotypes", "__pval_", pval, ".xlsx")
+
+for (i in comparisons) {
+  
+  write.xlsx(allRes.nodeSize.10.excel[[i]], outfile, sheetName = i, col.names = TRUE, row.names = FALSE, append = TRUE)
+}
+
+```
+
+
+Nov18: Save an excel file with frequencies of upregulated genes annotated to enriched GO terms
+```{r}
+#Import the file that lists Pking GeneIDs and gene names & types
+Pkings.gene.name.type <- read.table("dictionaries/Dic.PkingEntrezGeneID-to-name_symbol_type.txt", header = TRUE, row.names = NULL, sep = "\t", col.names = c("Pking_Entrez_geneID", "Pking_gene_name", "Pking_gene_symbol", "type_of_gene"), colClasses = c("character", "character", "character", "character"), quote = "")
+
+#drop the unnecessary columns from the GeneID-to-name dictionary
+Pkings.gene.name.type <- Pkings.gene.name.type[, c("Pking_Entrez_geneID", "Pking_gene_name", "type_of_gene")]
+
+
+#prepare the data
+enriched.GOids.genes.annot <- list()
+
+for (i in names(allRes.nodeSize.10)) {
+  
+  for (j in names(allRes.nodeSize.10[[i]])) {
+    
+    upreg.OTU <- sub(".*upregulated_in_", "", j)
+    
+    #the code fails for empty data frames
+    if (nrow(allRes.nodeSize.10[[i]][[j]]) > 0) {
+    
+      #collapse all genes into a vector, calculate frequencies, convert to data frame, sort by frequency
+      enriched.GOids.genes.annot[[i]][[j]] <- allRes.nodeSize.10[[i]][[j]]$Genes_annotated_to_the_GOterm %>% strsplit(., ",") %>% unlist() %>% table() %>% as.data.frame(., stringsAsFactors = FALSE) %>% dplyr::select(., Pking_Entrez_geneID = 1, Frequency = 2) %>% dplyr::arrange(., -Frequency)
+      
+      #add "Ontology" and "Enriched_OTU" columns to the data, reorder columns
+      enriched.GOids.genes.annot[[i]][[j]] <- enriched.GOids.genes.annot[[i]][[j]] %>% mutate(., "Ontology" = i, "Enriched_OTU" = upreg.OTU) %>% dplyr::select(., Ontology, Enriched_OTU, everything())
+      
+      #add gene name & type, reorder columns
+      enriched.GOids.genes.annot[[i]][[j]] <- left_join(enriched.GOids.genes.annot[[i]][[j]], Pkings.gene.name.type, by = "Pking_Entrez_geneID") %>% dplyr::select (-Frequency, everything())
+   
+    } else {
+      
+      #the following code is simply to give empty tables the same format as the ones with data
+      enriched.GOids.genes.annot[[i]][[j]] <- allRes.nodeSize.10[[i]][[j]]$Genes_annotated_to_the_GOterm %>% as.data.frame(., stringsAsFactors = FALSE) %>% rep(., 2) %>% as.data.frame(., stringsAsFactors = FALSE) %>% dplyr::select(., Pking_Entrez_geneID = 1, Frequency = 2) %>% dplyr::transmute(., Pking_Entrez_geneID = as.character(Pking_Entrez_geneID), Frequency = as.integer(Frequency))
+      
+      enriched.GOids.genes.annot[[i]][[j]] <- enriched.GOids.genes.annot[[i]][[j]] %>% mutate(., "Ontology" = i, "Enriched_OTU" = upreg.OTU, Pking_gene_name = 4, type_of_gene = 5) %>% dplyr::select(., Ontology, Enriched_OTU, everything()) %>% dplyr::select(., -Frequency, everything()) %>% dplyr::mutate(., Pking_gene_name = as.character(Pking_gene_name), type_of_gene = as.character(type_of_gene))
+      
+    }
+  }
+}  
+
+# consolidate the data in an excel-friendly manner
+enriched.GOids.genes.annot.excel <- list()
+
+#merge the OTUs per comparison. These will be the sheets in the excel file
+for (c in comparisons) {
+
+  for (i in names(enriched.GOids.genes.annot)) {
+  
+    upreg.OTUs <- names(enriched.GOids.genes.annot[[i]]) %>% grep(c, ., value =TRUE) %>%  sub(".*upregulated_in_", "", .)
+  
+    list1 <- paste0(c, "_upregulated_in_", upreg.OTUs[1])
+    list2 <- paste0(c, "_upregulated_in_", upreg.OTUs[2])
+    
+    enriched.GOids.genes.annot.excel[[c]] <- enriched.GOids.genes.annot.excel[[c]] %>% bind_rows(., enriched.GOids.genes.annot[[i]][[list1]]) %>% bind_rows(., enriched.GOids.genes.annot[[i]][[list2]])
+    
+  }
+}
+
+#save the annotated genes frequencies
+outfile = paste0("../all_10_DGE_comparisons/comparisons_GO_terms_genes_annotated.xlsx")
+
+for (i in comparisons) {
+  
+  if (nrow(enriched.GOids.genes.annot.excel[[i]]) > 0) {
+  
+  write.xlsx(enriched.GOids.genes.annot.excel[[i]], outfile, sheetName = i, col.names = TRUE, row.names = FALSE, append = TRUE)
+  }
+    
+}
+
+```
+
+
+Save the workspace
+```{r}
+#save the workspace
+save.image(file = "comparisons_topGO_enrichment.RData")
+
+```
