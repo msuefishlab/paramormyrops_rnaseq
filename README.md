@@ -1,5 +1,5 @@
 # paramormyrops_rnaseq
-Analysis scripts and code for Paramormyrops RNA-seq project (<insert citation here>)
+Analysis scripts and code for Paramormyrops RNA-seq project (Citation Forthcoming)
 
 This repository contains files with the code we used in our analysis.
 
