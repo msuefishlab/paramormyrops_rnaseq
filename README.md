@@ -5,6 +5,8 @@ This repository contains files with the code we used in our analysis.
 
 The table below serves as a guide to understand the flow of the code. It details the order in which the code was executed, along with a description and comments of each step.  Notes are shown in **bold** text.
 
+*Note:* that a Singularity file is provided in the folder trinity_singularity to run on high performance computing systems.  This would allow any user capable of running Singularity images to recreate the exact computing environment used for these analyses, though it is not required.
+
 
 | script/command file   | description      | comments         | additional_outputs (These are provided in  the folder named additional_files) |
 |-----------------------|------------------|------------------|-------------------------------------------------------------------------------|
