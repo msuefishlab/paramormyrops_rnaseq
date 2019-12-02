@@ -1,6 +1,5 @@
 ---
-title: Intersection of upregulated genes & enriched GO terms between informative comparisons
-  and clusters (groups)
+title: Intersection of upregulated genes between informative comparisons and clusters (groups), & GO terms enrichment of the intersected genes
 author: "Mauricio Losilla"
 date: "November 2, 2018"
 output: html_document
@@ -10,13 +9,20 @@ output: html_document
 #Load required libraries
 library(plyr)
 library(dplyr)
-library(xlsx)
+library(writexl)
+library(topGO)
+library(testthat)
+library(ggplot2)
+library(gridExtra)
+library(stringr)
+library(GO.db)
 
 session.Info <- sessionInfo()
 
 #set the wd. This is where the files with the read counts and the output folder are
-knitr::opts_knit$set(root.dir = "/home/mau/Dropbox (MSU Efish Lab)/Mau/Research/Differential expression/Analyses/09_Intersect_comparisons_clusters/R/") #set this one if knitting the R markdown file
-# setwd("/home/mau/Dropbox (MSU Efish Lab)/Mau/Research/Differential expression/Analyses/09_Intersect_comparisons_clusters/R/") #set this one if using the console, or if changing the wd for only one chunk of code in the .Rmd file
+knitr::opts_knit$set(root.dir = "/home/mau/Dropbox (MSU Efish Lab)/Manuscripts/Differential expression/Analyses/09_Intersect_comparisons_clusters/R/")
+knitr::opts_knit$set(root.dir = "/home/mau/Dropbox (MSU Efish Lab)/Manuscripts/Differential expression/Analyses/09_Intersect_comparisons_clusters/R/") #set this one if knitting the R markdown file
+# setwd("/home/mau/Dropbox (MSU Efish Lab)/Manuscripts/Differential expression/Analyses/09_Intersect_comparisons_clusters/R/") #set this one if using the console, or if changing the wd for only one chunk of code in the .Rmd file
 
 ```
 
@@ -118,83 +124,11 @@ for (i in 1:length(upreg.genes.phen.clust)) {
 ```
 
 
-Import the enriched GO terms per OTU in each informative comparison
-```{r}
-#create an ontology list to iterate through
-ontology <- c("BP", "CC", "MF")
-
-
-#import the enriched GO terms for each OTU
- 
-#make a list to hold the imported files
-enriched.GOids.OTU <- list()
-
-for (i in ontology) {
-  
-  #initialize the list for each ontology
-  enriched.GOids.OTU[[i]] <- list()
-  
-  #make a vector with the name of the files to import
-  inf.files.enrich <- character()
-  
-  for (c in inf.comparisons) {
-  
-    #extract the two OTUs
-    first <- sub("_vs_.*", "", c)
-    second <- sub(".*_vs_", "", c)
-    
-    file.first <- paste0(i, "_ontology_and_", c, "_upregulated_in_", first, "__pval_0.02_.txt")
-    file.second <- paste0(i, "_ontology_and_", c, "_upregulated_in_", second, "__pval_0.02_.txt")
-  
-    inf.files.enrich <- c(inf.files.enrich, file.first, file.second)
-  }
-  
-  #import the GOIDs enriched in each OTU, for ontology i (drop unwanted columns). Note: I had to add quote = "" because R was complaining. Turns out one GO term in one file has an "'" (apostrophe). 
-  enriched.GOids.OTU[[i]] <- lapply(paste0("../Input_files/GOterms_comparisons/", inf.files.enrich), function(x) as.data.frame(read.table(x, header = TRUE, row.names = NULL, sep = "\t", quote = "", stringsAsFactors = FALSE)[, c(1,2,7)], stringsAsFactors =FALSE))
-
-  #name the lists and rename columns
-  for (j in 1:length(enriched.GOids.OTU[[i]])) { 
-    dummy <- sub("__.*", "", inf.files.enrich[j])
-    names(enriched.GOids.OTU[[i]])[j] <- sub(".*and_", "", dummy)
-    colnames(enriched.GOids.OTU[[i]][[j]]) <- c("GO_IDs", "GO_terms", "Genes_annotated_to_the_GOterm")
-  }
-  
-}
-
-```
-
-
-Import the lists of enriched GO terms clustered by phenotype
-```{r}
-#Import the upregulated genes per EOD feature (clusters)
-
-#make a list to hold the imported files
-enriched.GOids.phen <- list()
-
-for (i in ontology) {
-  
-  #make a vector with the names of the files to import
-  files.clusters.GO <- list.files(path = "../Input_files/GOterms_clusters/", pattern = paste0(i, "_ontology.*"), full.names = TRUE)
-
-  #import the upregulated genes for each phenotype
-  enriched.GOids.phen[[i]] <- lapply(files.clusters.GO, function(x) as.data.frame(read.table(x, header = TRUE, row.names = NULL, sep = "\t", quote = "", stringsAsFactors = FALSE)[, c(1,2,7)], stringsAsFactors =FALSE))
-
-  #name the lists and rename columns
-  for (j in 1:length(enriched.GOids.phen[[i]])) { 
-    dummy <- sub(".*ontology_and_", "", files.clusters.GO[j]) %>% sub("__.*", "", .)
-    names(enriched.GOids.phen[[i]])[j] <- dummy
-    colnames(enriched.GOids.phen[[i]][[j]]) <- c("GO_IDs", "GO_terms", "Genes_annotated_to_the_GOterm")
-  }
-}
-
-```
-
-
 Import geneID-to-name dictionary
 ```{r}
 
 #Import the file that lists Pking GeneIDs and gene names & types
-Pkings.gene.name.type <- read.table("../Input_files/Dic.PkingEntrezGeneID-to-name_symbol_type.txt", header = TRUE, row.names = NULL, sep = "\t", col.names = c("Pking_Entrez_geneID", "Pking_gene_name", "Pking_gene_symbol", "type_of_gene"), colClasses = c("character", "character", "character", "character"), quote = "")
+Pkings.gene.name.type <- read.table("../Input_files/dictionaries/Dic.PkingEntrezGeneID-to-name_symbol_type.txt", header = TRUE, row.names = NULL, sep = "\t", col.names = c("Pking_Entrez_geneID", "Pking_gene_name", "Pking_gene_symbol", "type_of_gene"), colClasses = c("character", "character", "character", "character"), quote = "")
 
 ##added march19, keep the original dictionary with the gene symbol column. Use with list of upregulated genes only
 Pkings.gene.name.type.symbol <- Pkings.gene.name.type
@@ -273,99 +207,7 @@ for (i in unique(EOD.features)) {
 ```
 
 
-Intersect enriched GO terms in each phenotype of each EOD feature. This will take 2 code chunks
-```{r}
-#consolidate the lists to intersect in a list
-
-#build the backbone of the list
-features.lists.enriched.GOids <- list()
-
-for (f in ontology) {
-
-  #populate the sublist for each ontology. this can be automated, but at this point it's easier to populate them one by one.
-  features.lists.enriched.GOids[[f]]$intersect_biphasic <- list(enriched.GOids.OTU[[f]]$PKINGN_vs_PKINGP_upregulated_in_PKINGN, enriched.GOids.phen[[f]]$enriched_in_biphasic_samples)
-  names(features.lists.enriched.GOids[[f]]$intersect_biphasic) <- c("PKINGN_vs_PKINGP_enriched_in_PKINGN", "enriched_in_biphasic_samples")
-  
-  features.lists.enriched.GOids[[f]]$intersect_triphasic <- list(enriched.GOids.OTU[[f]]$PKINGN_vs_PKINGP_upregulated_in_PKINGP, enriched.GOids.phen[[f]]$enriched_in_triphasic_samples)
-  names(features.lists.enriched.GOids[[f]]$intersect_triphasic) <- c("PKINGN_vs_PKINGP_enriched_in_PKINGP", "enriched_in_triphasic_samples")
-  
-  
-  features.lists.enriched.GOids[[f]]$intersect_short_EOD <- list(enriched.GOids.OTU[[f]]$PKINGN_vs_PSN3_upregulated_in_PSN3, enriched.GOids.phen[[f]]$enriched_in_short_EOD_samples)
-  names(features.lists.enriched.GOids[[f]]$intersect_short_EOD) <- c("PKINGN_vs_PSN3_enriched_in_PSN3", "enriched_in_short_EOD_samples")
-  
-  features.lists.enriched.GOids[[f]]$intersect_long_EOD <- list(enriched.GOids.OTU[[f]]$PKINGN_vs_PSN3_upregulated_in_PKINGN, enriched.GOids.phen[[f]]$enriched_in_long_EOD_samples)
-  names(features.lists.enriched.GOids[[f]]$intersect_long_EOD) <- c("PKINGN_vs_PSN3_enriched_in_PKINGN", "enriched_in_long_EOD_samples")
-  
-  
-  features.lists.enriched.GOids[[f]]$intersect_small_penetrations <- list(enriched.GOids.OTU[[f]]$PKINGP_vs_PMAG1_upregulated_in_PKINGP, enriched.GOids.phen[[f]]$enriched_in_small_penetrations_samples)
-  names(features.lists.enriched.GOids[[f]]$intersect_small_penetrations) <- c("PKINGP_vs_PMAG1_upregulated_in_PKINGP", "enriched_in_small_penetrations_samples")
-  
-  features.lists.enriched.GOids[[f]]$intersect_large_penetrations <- list(enriched.GOids.OTU[[f]]$PKINGP_vs_PMAG1_upregulated_in_PMAG1, enriched.GOids.phen[[f]]$enriched_in_large_penetrations_samples)
-  names(features.lists.enriched.GOids[[f]]$intersect_large_penetrations) <- c("PKINGP_vs_PMAG1_upregulated_in_PMAG1", "enriched_in_large_penetrations_samples")
-
-
-}  
-```
-
-
-Intersect the lists of enriched GO terms per EOD feature and phenotype
-```{r}
-#make a list to hold the results
-enriched.GOids.intersected <- list()
-
-for (i in ontology) {
-  
-  enriched.GOids.intersected[[i]] <- list()
-  
-  for (j in names(features.lists.enriched.GOids[[i]])) {
-    
-    #do an inner join to find the genes shared in all lists. Notice that this will duplicate the columns "GO_terms" and "Genes_annotated_to_the_GOterm"
-    enriched.GOids.intersected[[i]][[j]] <- join_all(features.lists.enriched.GOids[[i]][[j]], by = "GO_IDs", type = "inner") 
- 
-    if (nrow(enriched.GOids.intersected[[i]][[j]]) == 0) {
-  
-    #these are empty data frames. remove duplicated columns
-    enriched.GOids.intersected[[i]][[j]] <- enriched.GOids.intersected[[i]][[j]][, !duplicated(colnames(enriched.GOids.intersected[[i]][[j]]))]
-     
-    #these are data frames with GO terms. Merge and keep unique values in the duplicated columns. This is important because the Genes_annotated_to_the_GOterm may not be the same, since each comparison had a different universe
-    } else {
-    
-      #find the indexes for each set of duplicated columns
-      cols.GOterms <- colnames(enriched.GOids.intersected[[i]][[j]]) %>% grep("GO_terms", .) %>% dput()
-      cols.genes.annot <- colnames(enriched.GOids.intersected[[i]][[j]]) %>% grep("Genes_annotated_to_the_GOterm", .) %>% dput()
-      
-      #create placeholder columns to store these processes
-      enriched.GOids.intersected[[i]][[j]]$temp.terms <- NA
-      enriched.GOids.intersected[[i]][[j]]$temp.genes <- NA
-      
-      #go to each row
-      for (k in 1:nrow(enriched.GOids.intersected[[i]][[j]])) {
-        
-        #merge and keep unique values for the GO_terms columns
-        enriched.GOids.intersected[[i]][[j]]$temp.terms[k] <- paste(enriched.GOids.intersected[[i]][[j]][k, cols.GOterms], collapse = ";") %>% {strsplit(., ";")[[1]]} %>% unique()
-          
-        #merge but keep only those genes annotated to a GO term in both GO terms sources
-        dummy1 <- enriched.GOids.intersected[[i]][[j]][cols.genes.annot[1]][k, ] %>% strsplit(., ",") %>% data.frame(., stringsAsFactors = FALSE) %>% {'names<-'(., "Genes_annotated_to_the_GOterm")}
-
-        dummy2 <- enriched.GOids.intersected[[i]][[j]][cols.genes.annot[2]][k, ] %>% strsplit(., ",") %>% data.frame(., stringsAsFactors = FALSE) %>% {'names<-'(., "Genes_annotated_to_the_GOterm")}
-
-        enriched.GOids.intersected[[i]][[j]]$temp.genes[k] <- inner_join(dummy1, dummy2, by = "Genes_annotated_to_the_GOterm") %>% apply(., 2, paste, collapse = ",") 
-        
-      }
- 
-      #remove unnecessary columns
-      enriched.GOids.intersected[[i]][[j]] <- enriched.GOids.intersected[[i]][[j]][ , !(colnames(enriched.GOids.intersected[[i]][[j]]) %in% c("GO_terms", "Genes_annotated_to_the_GOterm"))]
-      
-      #rename the columns
-      colnames(enriched.GOids.intersected[[i]][[j]]) <- c("GO_IDs", "GO_terms", "Genes_annotated_to_the_GOterm")
-    }
-  }
-}
-
-```
-
-
-Save the objects with intersected upregulated genes & GO terms
+Save the objects with intersected upregulated genes (set C genes)
 ```{r}
 #save the intersected upregulated genes
 for (i in names(upreg.genes.intersected)) {
@@ -377,131 +219,9 @@ for (i in names(upreg.genes.intersected)) {
   }
 }
 
+## save the same data to an excel file, for the supplementary information. 
 
-#save the intersected GO terms
-for (i in ontology) {
-  
-  for (j in names(enriched.GOids.intersected[[i]])) {
-
-    outfile = paste0("../Intersected_GOterms/", i, "_ontology_and_enriched_in_", j, ".txt")
-    write.table(enriched.GOids.intersected[[i]][[j]], file=outfile, quote=F, sep="\t", row.names = FALSE, col.names = TRUE)
-  }
-}
-```
-
-
-Nov18: I saved the intersected upregulated GO terms to tab separated text files in the previous code chunk. Here I want to save the same data to an excel file
-```{r}
-#First add "Ontology" and "Enriched_OTU" columns to the data
-enriched.GOids.intersected.condensed <- list()
-
-for (i in names(enriched.GOids.intersected)) {
-  
-  for (j in names(enriched.GOids.intersected[[i]])) {
-    
-    upreg.phen <- sub(".*intersect_", "", j)
-    enriched.GOids.intersected.condensed[[i]][[j]] <- enriched.GOids.intersected[[i]][[j]] %>% mutate(., "Ontology" = i, "Enriched_phenotype" = upreg.phen) %>% dplyr::select(., Ontology, Enriched_phenotype, everything())
-   
-  }
-}  
-
-
-enriched.GOids.intersected.excel <- list()
-
-#merge the phenotypes per EOD_feature. These will be the sheets in the excel file
-for (i in ontology) {
-
-      enriched.GOids.intersected.excel[["complexity"]] <- enriched.GOids.intersected.excel[["complexity"]] %>% bind_rows(., enriched.GOids.intersected.condensed[[i]]$intersect_biphasic) %>% bind_rows(., enriched.GOids.intersected.condensed[[i]]$intersect_triphasic)
-  
-  enriched.GOids.intersected.excel[["duration"]] <- enriched.GOids.intersected.excel[["duration"]] %>% bind_rows(., enriched.GOids.intersected.condensed[[i]]$intersect_short_EOD) %>% bind_rows(., enriched.GOids.intersected.condensed[[i]]$intersect_long_EOD)
-    
-  enriched.GOids.intersected.excel[["polarity"]] <- enriched.GOids.intersected.excel[["polarity"]] %>% bind_rows(.,  enriched.GOids.intersected.condensed[[i]]$intersect_small_penetrations) %>% bind_rows(., enriched.GOids.intersected.condensed[[i]]$intersect_large_penetrations)
-    
-}
-
-
-#save the GO enrichment results
-outfile = paste0("../Intersected_GO_terms.xlsx")
-
-for (i in EOD.features) {
-  
-  if (nrow(enriched.GOids.intersected.excel[[i]]) > 0) {
-  
-  write.xlsx(enriched.GOids.intersected.excel[[i]], outfile, sheetName = i, col.names = TRUE, row.names = FALSE, append = TRUE)
-  }
-    
-}
-
-```
-
-
-Nov18: Save an excel file with frequencies of upregulated genes annotated to enriched GO terms
-```{r}
-#prepare the data
-enriched.GOids.genes.annot <- list()
-
-for (i in names(enriched.GOids.intersected)) {
-  
-  for (j in names(enriched.GOids.intersected[[i]])) {
-    
-    upreg.phen <- sub(".*intersect_", "", j)
-    
-    #the code fails for empty data frames
-    if (nrow(enriched.GOids.intersected[[i]][[j]]) > 0) {
-    
-      #collapse all genes into a vector, calculate frequencies, convert to data frame, sort by frequency
-      enriched.GOids.genes.annot[[i]][[j]] <- enriched.GOids.intersected[[i]][[j]]$Genes_annotated_to_the_GOterm %>% strsplit(., ",") %>% unlist() %>% table() %>% as.data.frame(., stringsAsFactors = FALSE) %>% dplyr::select(., Pking_Entrez_geneID = 1, Frequency = 2) %>% dplyr::arrange(., -Frequency)
-      
-      #add "Ontology" and "Enriched_phenotype" columns to the data, reorder columns
-      enriched.GOids.genes.annot[[i]][[j]] <- enriched.GOids.genes.annot[[i]][[j]] %>% mutate(., "Ontology" = i, "Enriched_phenotype" = upreg.phen) %>% dplyr::select(., Ontology, Enriched_phenotype, everything())
-      
-      #add gene name & type, reorder columns
-      enriched.GOids.genes.annot[[i]][[j]] <- left_join(enriched.GOids.genes.annot[[i]][[j]], Pkings.gene.name.type, by = "Pking_Entrez_geneID") %>% dplyr::select (-Frequency, everything())
-   
-    } else {
-      
-      #the following code is simply to give empty tables the same format as the ones with data
-      enriched.GOids.genes.annot[[i]][[j]] <- enriched.GOids.intersected[[i]][[j]]$Genes_annotated_to_the_GOterm %>% as.data.frame(., stringsAsFactors = FALSE) %>% rep(., 2) %>% as.data.frame(., stringsAsFactors = FALSE) %>% dplyr::select(., Pking_Entrez_geneID = 1, Frequency = 2) 
-      
-      enriched.GOids.genes.annot[[i]][[j]] <- enriched.GOids.genes.annot[[i]][[j]] %>% mutate(., "Ontology" = i, "Enriched_phenotype" = upreg.phen, Pking_gene_name = 4, type_of_gene = 5) %>% dplyr::select(., Ontology, Enriched_phenotype, everything()) %>% dplyr::select(., -Frequency, everything())
-      
-    }
-  }
-}  
-
-# consolidate the data in an excel-friendly manner
-enriched.GOids.genes.annot.excel <- list()
-
-#merge the phenotypes per EOD_feature. These will be the sheets in the excel file
-for (i in names(enriched.GOids.genes.annot)) {
-
-      enriched.GOids.genes.annot.excel[["complexity"]] <- enriched.GOids.genes.annot.excel[["complexity"]] %>% bind_rows(., enriched.GOids.genes.annot[[i]]$intersect_biphasic) %>% bind_rows(., enriched.GOids.genes.annot[[i]]$intersect_triphasic)
-  
-  enriched.GOids.genes.annot.excel[["duration"]] <- enriched.GOids.genes.annot.excel[["duration"]] %>% bind_rows(., enriched.GOids.genes.annot[[i]]$intersect_short_EOD) %>% bind_rows(., enriched.GOids.genes.annot[[i]]$intersect_long_EOD)
-    
-  enriched.GOids.genes.annot.excel[["polarity"]] <- enriched.GOids.genes.annot.excel[["polarity"]] %>% bind_rows(.,  enriched.GOids.genes.annot[[i]]$intersect_small_penetrations) %>% bind_rows(., enriched.GOids.genes.annot[[i]]$intersect_large_penetrations)
-    
-}
-
-
-#save the annotated genes frequencies
-outfile = paste0("../Intersected_GO_terms_genes_annotated.xlsx")
-
-for (i in EOD.features) {
-  
-  if (nrow(enriched.GOids.genes.annot.excel[[i]]) > 0) {
-  
-  write.xlsx(enriched.GOids.genes.annot.excel[[i]], outfile, sheetName = i, col.names = TRUE, row.names = FALSE, append = TRUE)
-  }
-    
-}
-
-```
-
-
-Mar19: I saved the intersected upregulated genes (with gene symbols) to tab separated text files in a previous code chunk. Here I want to save the same data to an excel file, for the supplementary information. 
-```{r}
-## Merge the phenotypes into their EOD feature
+# Merge the phenotypes into their EOD feature
 
 #add a column with the phenotype
 upreg.genes.intersected.phen <- upreg.genes.intersected
@@ -514,15 +234,766 @@ for (i in names(upreg.genes.intersected.phen)) {
 upreg.genes.setC <- list()
 for (i in names(upreg.genes.intersected.phen)) {
   upreg.genes.setC[[i]] <- upreg.genes.intersected.phen[[i]][[1]] %>% bind_rows(., upreg.genes.intersected.phen[[i]][[2]])
-}  
+}
 
 ##Save to excel
-#create empty workbook
-wb <- createWorkbook()
-saveWorkbook(wb, "../Intersected_genes.xlsx")
-
 #save the intersected genes for each feature, in a tab with the name of the feature
-lapply(names(upreg.genes.setC), function(x) write.xlsx(upreg.genes.setC[[x]], "../Intersected_genes.xlsx", sheetName = x, col.names = TRUE, row.names = FALSE, append = TRUE))
+outfile = paste0("../Intersected_genes.xlsx")
+
+write_xlsx(upreg.genes.setC, path = outfile, col_names = TRUE, format_headers = FALSE)
+```
+
+
+Oct19: Plot the expression values of C, save pdf with all plots. This will take a few chunks
+THIS CODE plots the graphs WITH background color, a common scale, and several other tweaks, inspired by Traeger et al 2015, BMC Genomics, fig 3)
+
+The first thing I need to do is reload SetB but keeping expression values
+```{r}
+#make a vector with the names of the files to import
+files.clusters <- list.files(path = "../Input_files/upregulated_genes_clusters/", pattern = "enriched.*", full.names = TRUE)
+
+#import the upregulated genes for each phenotype
+SetB.plot <- lapply(files.clusters, function(x) as.data.frame(read.table(x, header = TRUE, row.names = NULL, stringsAsFactors = FALSE), stringsAsFactors =FALSE))
+
+for (i in 1:length(SetB.plot)) { 
+  upreg.phen <- sub(".*enriched_in_", "", files.clusters[i]) %>% sub("__.*", "", .)
+  names(SetB.plot)[i] <- paste0("upregulated_in_", upreg.phen)
+  
+  colnames(SetB.plot[[i]])[1] <- "Pking_Entrez_geneID"
+}
+
+```
+
+Add expression values to Set C genes 
+```{r}
+#make a list to hold the results
+SetC.plot <- list()
+
+#loop through the structure of the list that holds SetC
+for (i in names(upreg.genes.intersected)) {
+  
+  for (j in names(upreg.genes.intersected[[i]])) {
+    
+    #find the matching phenotype from SetB
+    ind <- grep(j, names(SetB.plot))
+    
+    #join the SetB and SetC lists for each phenotype. This will add the expression values to SetC
+    SetC.plot[[ind]] <- semi_join(SetB.plot[[ind]], upreg.genes.intersected[[i]][[j]], by = "Pking_Entrez_geneID")
+    names(SetC.plot)[ind] <- names(SetB.plot[ind])
+    
+    #sanity check
+    if (nrow(SetC.plot[[ind]])  != nrow(upreg.genes.intersected[[i]][[j]])) warning("SetCplot and SetC are not the same length", call. = FALSE)
+  
+  } 
+}
+```
+
+Plot!
+```{r}
+#get overall minimum (rounded to the lowest 0.5)
+ymin <- SetC.plot %>% lapply(., '[', , 2:12) %>% lapply(., FUN = min, na.rm =TRUE) %>% unlist() %>% min() %>% round_any(., 0.5, floor)
+
+#get overall maximum (rounded to the highest 0.5)
+ymax <- SetC.plot %>% lapply(., '[', , 2:12) %>% lapply(., FUN = max, na.rm =TRUE) %>% unlist() %>% max() %>% round_any(., 0.5, ceiling)
+
+#save all plots in a pdf file
+#there are some discrepancies between the output in Rstudio plot window and the saved pdf (size of some fonts, borders around the rectangles)
+outname1 <- "../SetCexpressionPlots.pdf"
+pdf(file=outname1)
+
+
+#Set the general plot options
+#mfrow: rows and columns of plots
+par(mfrow=c(3, 2),
+#mai: margins in inches between the plot region and the outer limit (bottom, left, top, right)
+  mai=c(0.9, 0.8, 0.6, 0.3),
+#xaxs, yaxs: space between the plot area and the axes lines. i=no space. r=4%. r is default
+  xaxs="r", yaxs="i")
+
+
+for (i in names(SetC.plot)) {
+  
+#get the threshold value and the limits for the grey box for each plot. The gray box indicates the samples that belong to the enriched phenotype
+  if (grepl("biphasic", i)) {
+    x1.1.rec = 0
+    x1.2.rec = 3.5
+    x2.1.rec = 9.5
+    x2.2.rec = 11.5
+    y1.2.rec = ymin+1
+    y2.2.rec = ymin+1
+ 
+    } else if (grepl("triphasic", i)) {
+    x1.1.rec = 3.5
+    x1.2.rec = 9.5
+    x2.1.rec = 0
+    x2.2.rec = 0
+    y1.2.rec = ymin+1
+    y2.2.rec = ymin+1
+
+    }  else if (grepl("short_EOD", i)) {
+    x1.1.rec = 9.5
+    x1.2.rec = 11.5
+    x2.1.rec = 0
+    x2.2.rec = 0
+    y1.2.rec = ymin+1
+    y2.2.rec = ymin+1
+
+    }  else if (grepl("long_EOD", i)) {
+    x1.1.rec = 0
+    x1.2.rec = 9.5
+    x2.1.rec = 0
+    x2.2.rec = 0
+    y1.2.rec = ymin+1
+    y2.2.rec = ymin+1
+
+    }  else if (grepl("small_penetrations", i)) {
+    x1.1.rec = 3.5
+    x1.2.rec = 5.5
+    x2.1.rec = 7.5
+    x2.2.rec = 9.5
+    y1.2.rec = ymin+1
+    y2.2.rec = ymin+1
+
+    }  else if (grepl("large_penetrations", i)) {
+    x1.1.rec = 5.5
+    x1.2.rec = 7.5
+    x2.1.rec = 0
+    x2.2.rec = 0
+    y1.2.rec = ymin+1
+    y2.2.rec = ymin+1
+
+    }  else  stop("Some names to plot don't match the expected phenotypes. This is a critical error", call. = FALSE) 
+  
+      par(mgp=c(1.9, 0.8, 0))
+  
+      #plot the first gene (necessary to plot the axes), with title and y axis
+      plot(as.numeric(SetC.plot[[i]][1,2:12]), type='l',  ylim=c(ymin, ymax), main=i, xaxt='n', xlab='', ylab='centered log2(TMM + 1)')
+
+      #add the samples' names to the x axis
+      axis(side=1, at=1:ncol(SetC.plot[[i]][2:12]), labels=colnames(SetC.plot[[i]][2:12]), las=2)
+      
+      
+      # draw background rectangles (predefined)
+        rect(0, ymin, 3.5, ymax, col="#30D5C8DD", lwd=0, border = NA)
+        rect(3.5, ymin, 5.5, ymax, col="#0000FFDD", lwd=0, border = NA) 
+        rect(5.5, ymin, 7.5, ymax, col="#FF4500DD", lwd=0, border = NA)
+        rect(7.5, ymin, 9.5, ymax, col="#FFD700DD", lwd=0, border = NA)
+        rect(9.5, ymin, 11.5, ymax, col="#E234E2DD", lwd=0, border = NA)
+        
+      #plot the genes
+      for(r in 1:nrow(SetC.plot[[i]])) {
+        points(as.numeric(SetC.plot[[i]][r,2:12]), type='l', col='#FFFFFF')
+      }
+        
+
+     # draw foreground alpha rectangles (predefined)
+      rect(0, ymin, 3.5, ymax, col="#30D5C826", lwd=0, border = NA) 
+      rect(3.5, ymin, 5.5, ymax, col="#0000FF26", lwd=0, border = NA)
+      rect(5.5, ymin, 7.5, ymax, col="#FF450026", lwd=0, border = NA)
+      rect(7.5, ymin, 9.5, ymax, col="#FFD70026", lwd=0, border = NA)
+      rect(9.5, ymin, 11.5, ymax, col="#E234E226", lwd=0, border = NA)
+
+    #plot the line of mean expression values
+      points(as.numeric(colMeans(SetC.plot[[i]][2:12])), type='o', pch=16, col='#389D25', lwd = 1.9, cex = 1.00) 
+        
+    #add the number of genes and a border to the entire plot
+      text(1.05, (ymin+0.6), nrow(SetC.plot[[i]]), cex=1, col='#000000')
+      box()
+}  
+
+dev.off()
+
+```
+
+
+Perform enrichment tests on Set C genes (this code is based on the code for enrichment tests on Sets A and B, read that file for details)
+Import all 10 universes from each DE analyses, and do a full join to generate the universe
+```{r}
+#make a list with the name of the files to import
+files.univ <- list.files(path = "../Input_files/universes/", pattern = "RSEM.gene.counts.matrix*")
+
+#import the Pking_EntrezGeneIDs of each file
+universes.DEG.Pking <- lapply(paste0("../Input_files/universes/", files.univ), function(x) as.data.frame(read.table(x, header = TRUE, row.names = NULL, stringsAsFactors = FALSE)[, 1], stringsAsFactors =FALSE))
+
+for (i in 1:length(universes.DEG.Pking)) {
+  names(universes.DEG.Pking)[i] <- sub(".*matrix.", "", files.univ[i])
+  names(universes.DEG.Pking)[i] <- sub(".edgeR.*", "", names(universes.DEG.Pking[i]))
+  colnames(universes.DEG.Pking[[i]]) <- "Pking_Entrez_geneID"
+}
+
+#Do a full join, to obtain the desire universe list
+universe.total.Pking <- join_all(universes.DEG.Pking, by = "Pking_Entrez_geneID", type = "full")
+universe.total.Pking <- universe.total.Pking[order(universe.total.Pking$Pking_Entrez_geneID), ]
+universe.total.Pking <- as.data.frame(universe.total.Pking, stringsAsFactors = FALSE)
+names(universe.total.Pking) <- "Pking_Entrez_geneID"
+
+```
+
+
+Import the dictionaries
+```{r}
+#Import the GeneID to GOID dictionaries
+Dics.Pking.GOterms <- list()
+
+Dics.Pking.GOterms[[1]] <- read.table("../Input_files/dictionaries/Dic.PkingEntrezGeneID-to-GO.BP.txt", header = TRUE, colClasses = c("character", "character"), blank.lines.skip = FALSE, sep = "\t")
+names(Dics.Pking.GOterms)[1] <- "Dic.PkingEntrezGeneID-to-GO.BP"
+
+Dics.Pking.GOterms[[2]] <- read.table("../Input_files/dictionaries/Dic.PkingEntrezGeneID-to-GO.CC.txt", header = TRUE, colClasses = c("character", "character"), blank.lines.skip = FALSE, sep = "\t")
+names(Dics.Pking.GOterms)[2] <- "Dic.PkingEntrezGeneID-to-GO.CC"
+
+Dics.Pking.GOterms[[3]] <- read.table("../Input_files/dictionaries/Dic.PkingEntrezGeneID-to-GO.MF.txt", header = TRUE, colClasses = c("character", "character"), blank.lines.skip = FALSE, sep = "\t")
+names(Dics.Pking.GOterms)[3] <- "Dic.PkingEntrezGeneID-to-GO.MF"
+
+```
+
+
+Prepare the universes of PkingEntrezGeneIDs-to-GOterms mappings that topGO wants
+```{r}
+#Add GO terms for each ontology to the universe
+
+#create empty lists to hold the results
+universe.total.Pking.GOterms <- list()
+counts.universe.total.Pking.GOterms <- list()
+
+#create an ontology list to iterate through
+ontology <- c("BP", "CC", "MF")
+
+for (i in names(Dics.Pking.GOterms)) {
+  
+  #find the index of the target dic in the Dics list
+  index.list <- match(i, names(Dics.Pking.GOterms))
+  
+  universe.total.Pking.GOterms[[index.list]] <- left_join(universe.total.Pking, Dics.Pking.GOterms[[i]], by = "Pking_Entrez_geneID")
+  names(universe.total.Pking.GOterms)[index.list] <- paste0("GOterms_for_", ontology[index.list], "_ontology")
+
+  
+  #count annotated & non-annotated genes, and NAs
+  dummy <- vector("list", 3)
+  names(dummy) <- c("annotated", "non.annotated", "NAs")
+  
+  #count annotated genes
+  dummy$annotated <- sum(universe.total.Pking.GOterms[[index.list]]$GO_IDs != "", na.rm = TRUE)
+  
+  #count empty cells (these are genes with a blastp (= Drerio) match, but without an ontology annotation
+  dummy$non.annotated <- sum(universe.total.Pking.GOterms[[index.list]]$GO_IDs == "", na.rm = TRUE)
+  
+   #count NAs (These are ncRNAs or proteins that didn't find a blastp match)
+  dummy$NAs <- length(which(is.na(universe.total.Pking.GOterms[[index.list]]$GO_IDs)))  
+  
+  counts.universe.total.Pking.GOterms[[index.list]] <- dummy
+  names(counts.universe.total.Pking.GOterms)[index.list] <- ontology[index.list]
+  
+  #make sure that all rows are accounted for
+  if (Reduce("+", counts.universe.total.Pking.GOterms[[index.list]]) != nrow(universe.total.Pking)) stop(paste0("The are rows unaccounted for in the universe of ", ontology[index.list], " ontology. This is a critical error"), call. = FALSE)
+
+  
+  #change NAs to empty cells. I am not sure if empty cells should be taken into account during the enrichment tests, but from TopGO's manual I understand these are dropped. Just in case, I rather pass the list to topGO. I don't know how it deals with NAs, so I prefer to convert them to empty cells
+  universe.total.Pking.GOterms[[index.list]]$GO_IDs <- replace(universe.total.Pking.GOterms[[index.list]]$GO_IDs, is.na(universe.total.Pking.GOterms[[index.list]]$GO_IDs), "")
+  
+
+}
+
+```
+
+
+The list universe.total.Pking.GOterms contains the PkingEntrezGeneID-to-GOterms mappings that topGO needs. However, topGO wants them on a specific format, and it's easier to use their import function to convert these files. The import functions loads the input file from disk, so I have to save these mappings to disk and then import them.
+```{r}
+
+#The text file format required by topGO is very simple. For gene-to-GOs mappings, it consists of one row for each gene with the following syntax:
+#    gene_ID<TAB>GO_ID1, GO_ID2, GO_ID3, ...
+
+#Save the universe.total.Pking.GOterms mappings, without column names
+for (i in names(universe.total.Pking.GOterms)) {
+
+  outfile = paste0("../universes/Pking_", i, ".txt")
+  write.table(universe.total.Pking.GOterms[[i]], file=outfile, quote=F, sep="\t", row.names = FALSE, col.names = FALSE)
+
+}
+
+#Import the recently saved mappings with the format topGO requires
+mappings.topGO <- list()
+
+for (i in names(universe.total.Pking.GOterms)) {
+
+  #get the index of the target ontology
+  index.list <- match(i, names(universe.total.Pking.GOterms))
+  
+  #import the mappings with the topGO function readMappings
+  infile <- paste0("../universes/Pking_", i, ".txt")
+  mappings.topGO[[index.list]] <- readMappings(infile)
+  names(mappings.topGO)[index.list] <- ontology[index.list]
+}
+
+# The object returned by readMappings is a named list of character vectors. The list names are the genes identifiers. Each element of the list is a character vector and contains the GO identifiers annotated to the specific gene. 
+
+#It is sufficient for the mapping to contain only the most specific GO annotations. However,topGO can also take as an input files in which all or some ancestors of the most specific GO annotations are included. This redundancy is not making for a faster running time and if possible it should be avoided.
+
+
+```
+
+
+I still need the "allGenes" argument. My list of genes to test enrichment in doesn't have p-values. For this type of data, topGO wants an object that contains 1) the universe and 2) the list of genes to test, coded as factors within the universe. The following code creates this object
+```{r}
+
+#Sanity check: randomly choose any of the gene names from the mappings.topGO list and compare it to the universe object
+dummy <- sample(3, 1)
+geneUniverse <- names(mappings.topGO[[dummy]])
+check <- compare(geneUniverse, universe.total.Pking$Pking_Entrez_geneID)
+if (check$message != "Equal")  stop(paste0("The gene list in the universe object and in the ", ontology[dummy], " ontology mapping list don't match. This is a critical error"), call. = FALSE)
+
+#create an empty list to hold all 6 "allGenes" argument objects 
+geneLists <- list()
+
+#this is the universe I change the name for easier reading 
+geneUniverse <- universe.total.Pking$Pking_Entrez_geneID
+  
+#build the "allGenes" argument object for each gene list. I will use SetC.plot as source for SetC genes because its internal extructure (genes in 6 lists) matches this code
+for (i in names(SetC.plot)) {
+  
+  #get the index of the target list of enriched genes
+  index.enrich <- match(i, names(SetC.plot))
+    
+  #The object for the "allGenes" argument is a named factor that indicates which genes are interesting and which not. It contains all the geneIDs in the universe, and those that are of interest are coded with a 1 (the others with 0)
+  geneLists[[index.enrich]] <- factor(as.integer(geneUniverse %in% SetC.plot[[index.enrich]]$Pking_Entrez_geneID))
+  names(geneLists[[index.enrich]]) <- geneUniverse
+  names(geneLists)[index.enrich] <- i
+    
+  #check that the number of genes in the enriched list matches the genes coded with 1:
+  check <- compare(length(SetC.plot[[index.enrich]]$Pking_Entrez_geneID), summary(geneLists[[index.enrich]])[["1"]])
+  if (check$message != "Equal")  stop(paste0("The number of genes in ", i, " doesn't match the number of genes coded for enrichment tests. This is a critical error"), call. = FALSE)
+                                               
+}
+
+```
+
+
+I now have all I need to build the object of class topGOdata required in step 1: Data prep
+```{r}
+
+#create  an empty list to hold all 18 topGOdata objects (3 ontologies x 6 gene lists)
+topGODataObject.nodeSize.10 <- list()
+
+for (i in ontology) {
+  
+ #get the index of the target ontology
+ index.onto <- match(i, ontology)
+ 
+ #make and name empty lists for each ontology. They will hold the info for the 6 gene lists
+ topGODataObject.nodeSize.10[[index.onto]] <- list()
+ names(topGODataObject.nodeSize.10)[index.onto] <- i
+  
+ #build the topGOdata object for each gene list, for the ontology at hand
+ for (j in names(SetC.plot)) {
+      
+    #get the index of the target list of enriched genes
+    index.enrich <- match(j, names(SetC.plot))
+    
+    #build the topGOdata object
+    descrip <- paste0("DEG ", j, ". These are the Set C genes upregulated in this phenotype. PkingEntrezGeneIDs were mapped to Drerio GOterms via blastp")
+    11
+    topGODataObject.nodeSize.10[[index.onto]][[index.enrich]] <- new("topGOdata", description = descrip, ontology = i, allGenes = geneLists[[j]], annot = annFUN.gene2GO, gene2GO = mappings.topGO[[i]], nodeSize = 10)
+    names(topGODataObject.nodeSize.10[[index.onto]])[index.enrich] <- j
+    
+    #view a summary of the data:
+    topGODataObject.nodeSize.10[[i]][[j]]
+                      
+  }
+}
+
+
+## Notes:
+
+# There are some functions to access info contained in the topGOdata object. See section 5 from the manual
+
+# The feasible genes of each topGOData object are the genes on which the analysis will be based. These are the genes with a GO annotation that topGO kept. 
+
+# Some DEG aren't annotated, hence they are also discarded among the non-feasible genes. I would say these are overrepresented in the DEG. Food for thought.
+
+# All feasible genes for a given ontology are the same, but since the enriched genes for each phenotype are different, every comparison needs its own topGOdata object.
+
+
+```
+
+
+Step 2) enrichment tests
+```{r}
+
+# runTest is the function that applies the specified test statistic (statistic = "") and method (algorithm = "")
+
+#statistics: tests can be based on gene counts, scores/ranks, or expression values. I plan to use gene counts. 
+  
+  ## Use: statistic = "fisher" This is Fisher's exact test (the one most commonly used for these analyses)
+
+#algorithms: These deal with the GO graph structure. There are five algorithms that can be used with statistics based on gene counts. 
+  
+  ## I will use the default:  algorithm = "weight01". This takes into account the GO hierarchy (as opposed to the classic algorithm), and is a mixture of the elim and weight algorithms. There isn't a ton of info available (I only found this: http://avrilomics.blogspot.com/2015/07/using-topgo-to-test-for-go-term.html), but this seems like the most sensible approach. 
+
+# p values are not adjusted, nor should they be. There is a brief discussion on section 6.2 of the manual, this is a highlight: "The p-values computed by the runTest function are unadjusted for multiple testing. We do not advocate against adjusting the p-values of the tested groups, however in many cases adjusted p-values might be misleading"
+# Remember that goana doesn't adjust p values either, and thy recommend only trusting small p vales (like trinity does)
+
+
+## Run the enrichment test
+
+#create empty list to hold results
+weight01.fisher.nodeSize.10 <- list()
+
+for (i in names(topGODataObject.nodeSize.10)) {
+  weight01.fisher.nodeSize.10[[i]] <- list()
+  
+  for (j in names(topGODataObject.nodeSize.10[[i]])) {
+    weight01.fisher.nodeSize.10[[i]][[j]] <- runTest(topGODataObject.nodeSize.10[[i]][[j]], algorithm = "weight01", statistic = "fisher")
+    
+  }
+}
+
+
+#The structure of the topGOresult object is quite simple. It contains the p-values or the statistics returned by the test and basic informations on the used test statistic/algorithm. The information stored in the topGOdata object is not carried over this object, and both of these objects will be needed by the diagnostic tools
+
+```
+
+
+3) Step 3: analyze results
+```{r}
+### I will first explain the tools I will use and the info they provide, and later I will run their code under the same for loops.
+
+
+## A) The function geneData displays basic info on input data: # of annotated genes, # of significant genes in the phenotype of interest, min size of a GO category (nodeSize), and # of significant GO categories 
+
+#create an empty list to hold the results
+BasicInfo.nodeSize.10 <- list()
+
+
+## B) The function score access the GO terms and their p values from a topGOresult object. These can be visualized with a historgram
+
+#create empty lists to hold the results
+pVals.nodeSize.10 <- list()
+pVals.hist.nodeSize.10 <- list()
+
+
+## C) The function GenTable summarizes the results from one or more tests applied to the same topGOdata object. Results sorted by argument "ranksOf = "weight01" ", which are the pvalues of the results using the weight01 method
+
+#create empty lists to hold the results
+allRes.nodeSize.10 <- list()
+
+#choose a pvalue cutoff
+pval <- 0.02
+
+
+## D) Visualizing the GO structure
+
+# An insightful way of looking at the results of the analysis is to investigate how the significant GO terms are distributed over the GO graph. This figure shows the subgraph induced by the most significant GO terms (the number is specified by "firstSigNodes"). Significant nodes are represented as rectangles. The plotted graph is the upper induced graph generated by these significant nodes. Rectangle color represents the relative significance, ranging from dark red (most significant) to bright yellow (least significant). For each node, some basic information is displayed. The first two lines show the GO identifier and a trimmed GO name. In the third line the raw p-value is shown. The forth line is showing the number of significant genes and the total number of genes annotated to the respective GO term.
+
+#There are two functions available. The showSigOfNodes will plot the induced subgraph to the current graphic device. The printGraph is a wraping function of showSigOfNodes and will save the resulting graph into a PDF or PS file
+
+#create empty lists to hold the results
+GOgraph.nodeSize.10 <- list()
+
+
+#run A, B, C, D
+for (i in names(weight01.fisher.nodeSize.10)) {
+  BasicInfo.nodeSize.10[[i]] <- list()
+  pVals.nodeSize.10[[i]] <- list()
+  pVals.hist.nodeSize.10[[i]] <- list()
+  allRes.nodeSize.10[[i]] <- list()
+  GOgraph.nodeSize.10[[i]] <- list()
+  
+  for (j in names(weight01.fisher.nodeSize.10[[i]])) {
+    
+    #A
+    BasicInfo.nodeSize.10[[i]][[j]] <- geneData(weight01.fisher.nodeSize.10[[i]][[j]])
+    
+    #B
+    pVals.nodeSize.10[[i]][[j]] <- score(weight01.fisher.nodeSize.10[[i]][[j]])
+    dummy <- tibble::rownames_to_column(as.data.frame(pVals.nodeSize.10[[i]][[j]]))
+    colnames(dummy) <- c("GO_term", "p-values")
+    pVals.hist.nodeSize.10[[i]][[j]] <- ggplot(dummy, aes(dummy$`p-values`)) + geom_histogram(binwidth = 0.05) + xlab("p-values") 
+    
+    #C
+    dummy <- GenTable(topGODataObject.nodeSize.10[[i]][[j]], weight01 = weight01.fisher.nodeSize.10[[i]][[j]], orderBy = "weight01", ranksOf = "weight01", topNodes = 100)
+    allRes.nodeSize.10[[i]][[j]] <- dummy[which(dummy$weight01 < pval), ]
+
+    #D
+    GOgraph.nodeSize.10[[i]][[j]] <- showSigOfNodes(topGODataObject.nodeSize.10[[i]][[j]], pVals.nodeSize.10[[i]][[j]], firstSigNodes = 5, useInfo = 'all')
+
+    outname <- paste0("../enriched_GOterms/GOgraphs_nodeSize.10/GOgraph_for_", i, "_ontology_and_", j)
+    sig.nodes <- length(allRes.nodeSize.10[[i]][[j]]$weight01)
+    printGraph(topGODataObject.nodeSize.10[[i]][[j]], weight01.fisher.nodeSize.10[[i]][[j]], firstSigNodes = sig.nodes, fn.prefix = outname, useInfo = "all", pdfSW = TRUE)
+
+  }
+}
+
+## E) Analysing individual GOterms
+
+#Finding the genes annotated with significant GO terms
+
+#this is from: http://avrilomics.blogspot.com/2015/07/using-topgo-to-test-for-go-term.html
+
+
+#to list the genes annotated to a particular set of GO terms; See next chunk
+
+
+#TopGO may report a GO term as significantly enriched which wasn't actually in your input annotations, but rather is an ancestor (in the GO hierarchy) of a GO term in your input annotations.
+#The number of GO terms in the TopGO subset of the GO hierarchy (= the GO terms annotated to genes in the gene 'universe' input file, plus the ancestors of those GO terms in the GO hierarchy) can be found using:
+length(usedGO(topGODataObject.nodeSize.10[[i]][[j]]))
+
+#This should agree with the 'number of nodes' given for the GO graph when you type 'GOdata', as it is the number of nodes in TopGO's internal version of the GO hierarchy (which is filtered just to contain your terms annotated to your gene universe, plus their ancestors). 
+```
+
+
+I want to 1) add the genes annotated to each enriched GO term, and 2) fix the GO term column: topGO reports trimmed GO terms, get the full GOterms from the GO.db package
+```{r}
+#genes annotated to each GO term
+
+for (i in ontology) {
+  
+  for (j in names(allRes.nodeSize.10[[i]])) {
+    
+    #extract the enriched GOids
+    go.terms <- allRes.nodeSize.10[[i]][[j]]$GO.ID
+    
+    #fetch the genes annotated to each of the enriched GOids. These genes are drawn from the universe
+    mygenes <- genesInTerm(topGODataObject.nodeSize.10[[i]][[j]], go.terms) 
+    
+    #keep only those annotated genes that are also upregulated, and add them as a new column
+    for (k in go.terms) {
+        
+      mygenes[[k]] <- data.frame(mygenes[[k]], stringsAsFactors = FALSE) %>% dplyr::select(Pking_Entrez_geneID = 1) %>% inner_join(., SetC.plot[[j]], by = "Pking_Entrez_geneID") %>% dplyr::pull(Pking_Entrez_geneID) %>% as.vector() %>% paste(., collapse = ",")
+        
+      allRes.nodeSize.10[[i]][[j]]$Genes_annotated_to_the_GOterm[match(k, go.terms)] <- mygenes[[k]]
+        
+    }
+    
+    #the following is necessary to add the columns to those results with no enriched GO terms
+    if (length(grep("Genes_annotated_to_the_GOterm", colnames(allRes.nodeSize.10[[i]][[j]]))) == 0) {  allRes.nodeSize.10[[i]][[j]]$Genes_annotated_to_the_GOterm <- character() }
+    
+
+#fetch the full GOterms
+    dummy <- Term(allRes.nodeSize.10[[i]][[j]]$GO.ID) %>% as.data.frame(stringsAsFactors =FALSE) %>% tibble::rownames_to_column() %>% dplyr::select(GO.ID = 1, GO_term =2)
+    
+    #join the objects with the results and the GO_terms
+    allRes.nodeSize.10[[i]][[j]] <- left_join(allRes.nodeSize.10[[i]][[j]], dummy, by = "GO.ID")
+    
+    #check for NAs in the GO_Term column
+    if (length(which(is.na(allRes.nodeSize.10[[i]][[j]]))) != 0) warning("There are some NA values\n", call. = FALSE)
+    
+    #dump the old Term column and reorder the rest
+    allRes.nodeSize.10[[i]][[j]] <- dplyr::select(allRes.nodeSize.10[[i]][[j]], -Term) %>% dplyr::select(., GO.ID, GO_term, everything())
+
+  }
+}
+
+```
+
+
+Save the summary of the results (note that the graphs were saved in previously)
+```{r}
+for (i in names(allRes.nodeSize.10)) {
+  
+  for (j in names(allRes.nodeSize.10[[i]])) {
+
+    #save the GO enrichment results
+    outfile = paste0("../enriched_GOterms/GO_terms_SetC/", i, "_ontology_and_", j, "__pval_", pval, "_.txt")
+    write.table(allRes.nodeSize.10[[i]][[j]], file=outfile, quote=F, sep="\t", row.names = FALSE, col.names = TRUE)
+  }
+}
+
+
+###save the same data to an excel file
+
+#First add "Ontology" and "Enriched_phenotype" columns to the data
+allRes.nodeSize.10.condensed <- list()
+
+for (i in names(allRes.nodeSize.10)) {
+  
+  for (j in names(allRes.nodeSize.10[[i]])) {
+    
+    upreg.phen <- sub(".*upregulated_in_", "", j) %>% sub("_samples*", "", .)
+    allRes.nodeSize.10.condensed[[i]][[j]] <- allRes.nodeSize.10[[i]][[j]] %>% dplyr::mutate(., "Ontology" = i, "Enriched_phenotype" = upreg.phen) %>% dplyr::select(., Ontology, Enriched_phenotype, everything())
+   
+  }
+}  
+
+
+allRes.nodeSize.10.excel <- list()
+
+#merge the phenotypes per comparison. These will be the sheets in the excel file
+for (i in ontology) {
+
+  allRes.nodeSize.10.excel[["complexity"]] <- allRes.nodeSize.10.excel[["complexity"]] %>% bind_rows(., allRes.nodeSize.10.condensed[[i]]$upregulated_in_biphasic_samples) %>% bind_rows(., allRes.nodeSize.10.condensed[[i]]$upregulated_in_triphasic_samples)
+  
+  allRes.nodeSize.10.excel[["duration"]] <- allRes.nodeSize.10.excel[["duration"]] %>% bind_rows(., allRes.nodeSize.10.condensed[[i]]$upregulated_in_short_EOD_samples) %>% bind_rows(., allRes.nodeSize.10.condensed[[i]]$upregulated_in_long_EOD_samples)
+    
+  allRes.nodeSize.10.excel[["polarity"]] <- allRes.nodeSize.10.excel[["polarity"]] %>% bind_rows(.,  allRes.nodeSize.10.condensed[[i]]$upregulated_in_small_penetrations_samples) %>% bind_rows(., allRes.nodeSize.10.condensed[[i]]$upregulated_in_large_penetrations_samples)
+
+}
+
+
+#save the GO enrichment results
+outfile = paste0("../enriched_GOterms/GOterms_all_ontologies_all_phenotypes", "__pval_", pval, ".xlsx")
+
+write_xlsx(allRes.nodeSize.10.excel, path = outfile, col_names = TRUE, format_headers = FALSE)
+```
+
+
+Save an excel file with frequencies of upregulated genes annotated to enriched GO terms
+```{r}
+#Import the file that lists Pking GeneIDs and gene names & types
+Pkings.gene.name.type <- read.table("../Input_files/dictionaries/Dic.PkingEntrezGeneID-to-name_symbol_type.txt", header = TRUE, row.names = NULL, sep = "\t", col.names = c("Pking_Entrez_geneID", "Pking_gene_name", "Pking_gene_symbol", "type_of_gene"), colClasses = c("character", "character", "character", "character"), quote = "")
+
+#drop the unnecessary columns from the GeneID-to-name dictionary
+Pkings.gene.name.type <- Pkings.gene.name.type[, c("Pking_Entrez_geneID", "Pking_gene_name", "type_of_gene")]
+
+
+#prepare the data
+enriched.GOids.genes.annot <- list()
+
+for (i in names(allRes.nodeSize.10)) {
+  
+  for (j in names(allRes.nodeSize.10[[i]])) {
+    
+    upreg.phen <- sub(".*upregulated_in_", "", j) %>% sub("_samples*", "", .)
+    
+    #the code fails for empty data frames
+    if (nrow(allRes.nodeSize.10[[i]][[j]]) > 0) {
+    
+      #collapse all genes into a vector, calculate frequencies, convert to data frame, sort by frequency
+      enriched.GOids.genes.annot[[i]][[j]] <- allRes.nodeSize.10[[i]][[j]]$Genes_annotated_to_the_GOterm %>% strsplit(., ",") %>% unlist() %>% table() %>% as.data.frame(., stringsAsFactors = FALSE) %>% dplyr::select(., Pking_Entrez_geneID = 1, Frequency = 2) %>% dplyr::arrange(., -Frequency)
+      
+      #add "Ontology" and "Enriched_phenotype" columns to the data, reorder columns
+      enriched.GOids.genes.annot[[i]][[j]] <- enriched.GOids.genes.annot[[i]][[j]] %>% dplyr::mutate(., "Ontology" = i, "Enriched_phenotype" = upreg.phen) %>% dplyr::select(., Ontology, Enriched_phenotype, everything())
+      
+      #add gene name & type, reorder columns
+      enriched.GOids.genes.annot[[i]][[j]] <- left_join(enriched.GOids.genes.annot[[i]][[j]], Pkings.gene.name.type, by = "Pking_Entrez_geneID") %>% dplyr::select (-Frequency, everything())
+   
+    } else {
+      
+      #the following code is simply to give empty tables the same format as the ones with data
+      enriched.GOids.genes.annot[[i]][[j]] <- allRes.nodeSize.10[[i]][[j]]$Genes_annotated_to_the_GOterm %>% as.data.frame(., stringsAsFactors = FALSE) %>% rep(., 2) %>% as.data.frame(., stringsAsFactors = FALSE) %>% dplyr::select(., Pking_Entrez_geneID = 1, Frequency = 2) 
+      
+      enriched.GOids.genes.annot[[i]][[j]] <- enriched.GOids.genes.annot[[i]][[j]] %>% dplyr::mutate(., "Ontology" = i, "Enriched_phenotype" = upreg.phen, Pking_gene_name = 4, type_of_gene = 5) %>% dplyr::select(., Ontology, Enriched_phenotype, everything()) %>% dplyr::select(., -Frequency, everything())
+      
+    }
+  }
+}  
+
+# consolidate the data in an excel-friendly manner
+enriched.GOids.genes.annot.excel <- list()
+
+#merge the phenotypes per EOD_feature. These will be the sheets in the excel file
+for (i in names(enriched.GOids.genes.annot)) {
+
+      enriched.GOids.genes.annot.excel[["complexity"]] <- enriched.GOids.genes.annot.excel[["complexity"]] %>% bind_rows(., enriched.GOids.genes.annot[[i]]$upregulated_in_biphasic_samples) %>% bind_rows(., enriched.GOids.genes.annot[[i]]$upregulated_in_triphasic_samples)
+  
+  enriched.GOids.genes.annot.excel[["duration"]] <- enriched.GOids.genes.annot.excel[["duration"]] %>% bind_rows(., enriched.GOids.genes.annot[[i]]$upregulated_in_short_EOD_samples) %>% bind_rows(., enriched.GOids.genes.annot[[i]]$upregulated_in_long_EOD_samples)
+    
+  enriched.GOids.genes.annot.excel[["polarity"]] <- enriched.GOids.genes.annot.excel[["polarity"]] %>% bind_rows(.,  enriched.GOids.genes.annot[[i]]$upregulated_in_small_penetrations_samples) %>% bind_rows(., enriched.GOids.genes.annot[[i]]$upregulated_in_large_penetrations_samples)
+    
+}
+
+#save the annotated genes frequencies
+outfile = paste0("../enriched_GOterms/genes_annotated_to_GOterms.xlsx")
+
+write_xlsx(enriched.GOids.genes.annot.excel, path = outfile, col_names = TRUE, format_headers = FALSE)
+
+```
+
+
+Plot a horizontal bar plot for the significant GO terms in each comparison and ontology (total = 9). Inspired by Traeger et al 2015, BMC Genomics, fig 4)
+This will need two code chunks. The first one will arrange the data, the second one will plot and save it
+```{r}
+#transform p-values to a more suitable scale (where smaller p-values become larger numbers)
+#drop unnecessary columns
+#join phenotypes from the same comparison into a single object (we want a plot per comparison, not per phenotype)
+#change numerical sign of the transformed p-value of one phenotype (because we want to plot each phenotype in opposite directons in the x axis)
+#make sure the GO terms are ordered in the following matter for the plot: within each phenotype, by decreasing magnitude of the absolute value of the transformed pvalue
+
+#copy results to a new list
+pre.plot.full.GOterms <- allRes.nodeSize.10
+
+#for each ontology i
+for (i in ontology) {
+  
+  #for each phenotype j
+  for (j in names(pre.plot.full.GOterms[[i]])) {
+    
+    #transform p-values (notice I am using natural logarithm)
+    pre.plot.full.GOterms[[i]][[j]]$pval.transf <- log(1 / as.numeric(pre.plot.full.GOterms[[i]][[j]]$weight01))
+    
+    #Keep only the columns necessary for the plot
+    pre.plot.full.GOterms[[i]][[j]] <- subset(pre.plot.full.GOterms[[i]][[j]], select = c(GO_term, pval.transf))
+    
+    #add a column with the phenotype (uselful for checking that the pvalues have the correct sign (+ or -) when plotting)
+    pre.plot.full.GOterms[[i]][[j]]$phenotype <- names(pre.plot.full.GOterms[[i]][j]) %>% sub(".*_in_", "", .) %>% sub("_samples", "", .) %>% rep(., nrow(pre.plot.full.GOterms[[i]][[j]]))
+  }
+}
+
+#join phenotypes from the same comparison into a single object, change the numerical sign of one phenotype, make sure the final order is the desired one
+plot.full.GOterms <- list()
+
+#for each ontology i
+for (i in ontology) {
+  
+  plot.full.GOterms[[i]][["complexity"]] <- pre.plot.full.GOterms[[i]]$upregulated_in_biphasic_samples %>% mutate_if(is.numeric, function(x) -1*x) %>% bind_rows(., pre.plot.full.GOterms[[i]]$upregulated_in_triphasic_samples)
+  #the next step prevents ggplot from ordering the GO terms alphabetically
+  plot.full.GOterms[[i]][["complexity"]]$"GO_term" <- factor(plot.full.GOterms[[i]][["complexity"]]$"GO_term", levels = rev(unique(plot.full.GOterms[[i]][["complexity"]]$"GO_term")))
+ 
+  plot.full.GOterms[[i]][["duration"]] <- pre.plot.full.GOterms[[i]]$upregulated_in_short_EOD_samples %>% mutate_if(is.numeric, function(x) -1*x) %>% bind_rows(., pre.plot.full.GOterms[[i]]$upregulated_in_long_EOD_samples)
+  #the next step prevents ggplot from ordering the GO terms alphabetically
+  plot.full.GOterms[[i]][["duration"]]$"GO_term" <- factor(plot.full.GOterms[[i]][["duration"]]$"GO_term", levels = rev(unique(plot.full.GOterms[[i]][["duration"]]$"GO_term")))
+    
+  plot.full.GOterms[[i]][["polarity"]] <- pre.plot.full.GOterms[[i]]$upregulated_in_small_penetrations_samples %>% mutate_if(is.numeric, function(x) -1*x) %>% bind_rows(., pre.plot.full.GOterms[[i]]$upregulated_in_large_penetrations_samples)
+  #the next step prevents ggplot from ordering the GO terms alphabetically
+  plot.full.GOterms[[i]][["polarity"]]$"GO_term" <- factor(plot.full.GOterms[[i]][["polarity"]]$"GO_term", levels = rev(unique(plot.full.GOterms[[i]][["polarity"]]$"GO_term")))
+    
+}  
+
+#the data is ready for plotting
+
+```
+
+
+Plot!
+```{r}
+#get overall minimun and maximum (rounded to the lowest/highest 0.5)
+neg <- plot.full.GOterms %>% lapply(., lapply, function(x) min(x[["pval.transf"]], na.rm =TRUE)) %>% unlist() %>% min() %>% round_any(., 0.5, floor)
+
+pos <- plot.full.GOterms %>% lapply(., lapply, function(x) max(x[["pval.transf"]], na.rm =TRUE)) %>% unlist() %>% max() %>% round_any(., 0.5, ceiling)
+
+#I want the positive and negative X axis to be simmetric. Choose the largest of them and use as the min and max value to plot
+xlimit <- max(abs(neg), pos)
+
+#These are the numbers I want in the xaxis ticks
+xticks <- c(-seq(0, -xlimit, by = -2) %>% .[. != 0] %>% rev(), 0, seq(0, xlimit, by = 2) %>% .[. != 0]) 
+xbreaks <- c(seq(0, -xlimit, by = -2) %>% .[. != 0] %>% rev(), 0, seq(0, xlimit, by = 2) %>% .[. != 0])
+
+#comparisons
+comparisons <- c("complexity", "duration", "polarity")
+
+#make a list to hold plots
+ggplots <- list()
+
+#for each ontology i
+for (i in ontology) {
+  
+  #for each comparison j
+  for (j in comparisons) {
+  
+  #phenotypes for each comparison (for the title). the next 2 lines of code fail for the comparisons where a phenotype has no enriched GO terms
+  phen <- plot.full.GOterms[[i]][[j]]$phenotype %>% unique() %>% sub("_", " ", .)
+  title <- paste(phen[1], phen [2], sep = "\t \t \t \t")
+  
+  #index to store
+  index <- paste(i, j)
+
+  ggplots[[index]] <- ggplot(plot.full.GOterms[[i]][[j]], aes(x=GO_term, y=pval.transf)) + geom_bar(stat = "identity", width = 0.3) + coord_flip() + ylab("ln(1/p-value)") + xlab("GO terms") + theme_classic() + scale_y_continuous(limits = c(-xlimit, xlimit), breaks = xbreaks, labels = xticks) + ggtitle(title) + theme(plot.title = element_text(hjust = 0.5, size =10), panel.border = element_rect(colour = "black", size = 1, fill = NA), aspect.ratio = 1.25) + geom_hline(yintercept = 0) + scale_x_discrete(labels = function(x) str_wrap(x, width = 60))
+
+  }
+}
+
+ml <- marrangeGrob(grobs = ggplots, ncol = 3, nrow = 3)
+
+ggsave("../enriched_GOterms/barplots_SetC.pdf", ml, width = 70, height = 30, units = "cm")
+
 
 ```
 

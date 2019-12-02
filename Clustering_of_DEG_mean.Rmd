@@ -76,36 +76,57 @@ samples.per.group <- function (group1, group2) {
 Write a function to select and save the genes with desired expression profile
 ```{r}
 
+# need the TMM values, these must have the same geneIDs as "data"
+TMM <- read.csv("../RSEM.gene.TMM.EXPR.matrix", sep = '\t')
+rownames(TMM) <- TMM[,1]
+TMM <- TMM[rownames(data), ]
+TMM <- TMM[,-1]
+
+# epsilon is added to numerator and denominator to avoid dividing by zero during log transformations
+epsilon = 0.001
+# threshold expression value for at least one of the group averages
+minTMM = 1
+
 genes.of.interest <- function (groups, threshold) {
   
-  #get mean values of each group
-  av.values.g1 <- apply(data[,groups[[1]]], 1, FUN = mean)
-  av.values.g2 <- apply(data[,groups[[2]]], 1, FUN = mean)
+  #get mean and max std.dev value of each group, based on TMM values
+  TMM.temp <- TMM
+  
+  TMM.temp$av.values.g1 <- apply(TMM[,groups[[1]]], 1, FUN = mean)
+  TMM.temp$av.values.g2 <- apply(TMM[,groups[[2]]], 1, FUN = mean)
+  
+  #log2 fold change of average group expression values
+  TMM.temp$logFC.g1 <- log( (TMM.temp$av.values.g1 + epsilon) / (TMM.temp$av.values.g2 + epsilon) ) / log(2)
+  TMM.temp$logFC.g2 <- log( (TMM.temp$av.values.g2 + epsilon) / (TMM.temp$av.values.g1 + epsilon) ) / log(2)
 
+  #standard deviations of of group expression values
+  TMM.temp$sd.values.g1 <- apply(TMM[,groups[[1]]], 1, FUN = sd)
+  TMM.temp$sd.values.g2 <- apply(TMM[,groups[[2]]], 1, FUN = sd)
+  
+  #maximum of the two standard deviations
+  TMM.temp$sd.max <- pmax(TMM.temp$sd.values.g1, TMM.temp$sd.values.g2)
+  #absolute value of the difference of the two mean expression values
+  TMM.temp$absdiff <- abs(TMM.temp$av.values.g1 - TMM.temp$av.values.g2)
+  
+  #remove lowly expressed mean expression values
+  TMM.passed_minTMM <- TMM.temp[apply(TMM.temp[,c("av.values.g1","av.values.g2")], 1, FUN = max) > minTMM, ]
+  #remove genes with a group max standard deviation smaller than the difference of the two mean expression values
+  TMM.passed_sdfilter <- TMM.passed_minTMM[TMM.passed_minTMM$absdiff > TMM.passed_minTMM$sd.max, ]
+  #remove genes with less than 4 fold between-group mean expression
+  TMM.passed_threshold.g1 <- TMM.passed_sdfilter[TMM.passed_sdfilter$logFC.g1 >= threshold, ]
+  TMM.passed_threshold.g2 <- TMM.passed_sdfilter[TMM.passed_sdfilter$logFC.g2 >= threshold, ]
+  
   #create empty list for results
   result <- list()
   #record the threshold, to later include it in the plots
   result[[1]] <- threshold
   
-  #add a columns with the desired differences (see below). This will allow to rank the selected genes 
-  data.mod <- cbind((av.values.g1 - av.values.g2), (av.values.g2 - av.values.g1), data)
-  colnames(data.mod)[c(1,2)] <- c("g1", "g2")
+ 
+   #assign filtered genes to results list
+  result[[2]] <- data[rownames(TMM.passed_threshold.g1), ] 
   
- # genes enriched in group#1 (=depleted in group#2): mean expression value of group#1 is t (threshold) larger than the mean expression value of group#2
-  dummy <- data.mod[data.mod[, "g1"] >= threshold, , drop = FALSE]
-  #rank the genes
-  dummy <- dummy[order(dummy[,"g1"], decreasing = TRUE),]
-  #delete the columns with the differences in mean values
-  result[[2]] <- dummy[,-1:-2, drop = FALSE]
-  
-  
-  # genes enriched in group#2 (=depleted in group#1): mean expression value of group#2 is t (threshold) larger than the mean expression value of group#1
-  dummy <- data.mod[data.mod[, "g2"] >= threshold, , drop = FALSE]
-  #rank the genes
-  dummy <- dummy[order(dummy[,"g2"], decreasing = TRUE),]
-  
-  #delete the columns with the differences in mean values
-  result[[3]] <- dummy[,-1:-2, drop = FALSE]
+   #assign filtered genes to results list
+  result[[3]] <- data[rownames(TMM.passed_threshold.g2), ] 
   
   #name the lists
   names(result)[1] <- "threshold_difference"
@@ -244,7 +265,7 @@ polarity.samples <- samples.per.group(small_penetrations, large_penetrations)
 
 Select and save enriched genes in each group for each EOD phenotype
 ```{r}
-# Set the desired threshold
+# Set the desired threshold (use log2 fold change)
 threshold <- 2
 
 complexity.results <- genes.of.interest(complexity.samples, threshold)
@@ -330,8 +351,8 @@ names(data.plot.all) <- names(c(complexity.results[2], complexity.results[3], du
 #get overall minimum (rounded to the lowest 0.5)
 ymin <- data.plot.all %>% lapply(., FUN = min, na.rm =TRUE) %>% unlist() %>% min() %>% round_any(., 0.5, floor)
 
-#Maximum is fixed at 6.5, this covers every genes but two from smaller penetrations (otherwise most plots get a large empty space on top. Traeger's plots are cut at the top as well)
-ymax <- 6.5
+#get overall maximum (rounded to the highest 0.5)
+ymax <- data.plot.all %>% lapply(., FUN = min, na.rm =TRUE) %>% unlist() %>% max() %>% round_any(., 0.5, ceiling)
 
 
 #save all plots in a pdf file
