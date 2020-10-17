@@ -1,5 +1,5 @@
 # paramormyrops_rnaseq
-Analysis scripts and code for Paramormyrops RNA-seq project (Citation Forthcoming)
+Analysis scripts and code for our research article: Losilla, M., Luecke, D.M. & Gallant, J.R. The transcriptional correlates of divergent electric organ discharges in Paramormyrops electric fish. BMC Evol Biol 20, 6 (2020). https://doi.org/10.1186/s12862-019-1572-3
 
 This repository contains files with the code we used in our analysis.
 
